@@ -315,31 +315,61 @@ elif st.session_state['user_role'] == 'client':
             if uploaded_file is None:
                 st.info("👆 上傳檔案後，系統會自動清理，並在下方給你下載按鈕。")
             else:
-                # ---------- 自動判斷第一行是否為標題 ----------
-                def smart_read(file):
-                    name = file.name.lower()
-                    if name.endswith('.csv'):
-                        try:
-                            preview = pd.read_csv(file, encoding='utf-8-sig', header=None, nrows=3)
-                        except UnicodeDecodeError:
+                                def smart_read(file):
+                    """安全地判斷第一行是否為標題"""
+                    try:
+                        name = file.name.lower()
+                        if name.endswith('.csv'):
+                            try:
+                                preview = pd.read_csv(file, encoding='utf-8-sig', header=None, nrows=3)
+                            except UnicodeDecodeError:
+                                file.seek(0)
+                                preview = pd.read_csv(file, encoding='big5', header=None, nrows=3)
                             file.seek(0)
-                            preview = pd.read_csv(file, encoding='big5', header=None, nrows=3)
-                        file.seek(0)
-                    else:
-                        preview = pd.read_excel(file, header=None, nrows=3)
-                        file.seek(0)
+                        else:
+                            preview = pd.read_excel(file, header=None, nrows=3)
+                            file.seek(0)
+                    except Exception:
+                        return True  # 讀不到就預設有標題
 
-                    first_row = preview.iloc[0].astype(str)
-                    if len(preview) >= 2:
-                        text_count_1 = sum(
-                            1 for v in first_row
-                            if not v.replace('.', '').replace('-', '').replace('/', '').isdigit()
-                        )
-                        has_header = text_count_1 >= len(first_row) * 0.6
-                    else:
-                        has_header = True
-                    return has_header
+                    if len(preview) == 0:
+                        return True
 
+                    # 安全地取得第一列，一律轉成 list of str
+                    try:
+                        first_row_raw = preview.iloc[0]
+                        if isinstance(first_row_raw, pd.Series):
+                            first_row_vals = [str(v) for v in first_row_raw.tolist()]
+                        else:
+                            # 邊緣情況：回傳純量
+                            first_row_vals = [str(first_row_raw)]
+                    except Exception:
+                        return True
+
+                    if not first_row_vals:
+                        return True
+
+                    def is_text_value(v):
+                        """判斷一個值是不是『文字型』（非數字）"""
+                        try:
+                            cleaned = (
+                                str(v)
+                                .replace('.', '')
+                                .replace('-', '')
+                                .replace('/', '')
+                                .replace(' ', '')
+                                .replace(',', '')
+                                .replace(':', '')
+                                .strip()
+                            )
+                            if cleaned == '' or cleaned.lower() == 'nan':
+                                return False
+                            return not cleaned.isdigit()
+                        except Exception:
+                            return False
+
+                    text_count = sum(1 for v in first_row_vals if is_text_value(v))
+                    return text_count >= len(first_row_vals) * 0.6
                 with st.spinner("正在讀取檔案…"):
                     try:
                         has_header = smart_read(uploaded_file)
