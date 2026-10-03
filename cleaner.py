@@ -1,12 +1,6 @@
 """
-智慧資料清理引擎 (Smart Data Cleaner) v2
-新增功能：
-  1. 移除非資料行（###、===、系統警告、公司名稱...）
-  2. 清理 Excel 錯誤值（#VALUE!、#N/A...）
-  3. 民國年自動轉西元
-  4. 貨幣 / 會計數字清理（NT$ 5,000 → 5000、(8) → -8）
-  5. 無效日期偵測（13月、2月30日）
-  6. 欄位合理性檢查（數量為負、金額為文字）
+智慧資料清理引擎 (Smart Data Cleaner) v2 - 保守版
+避免使用可能因 pandas 版本不同而不支援的 API
 """
 
 import re
@@ -42,14 +36,12 @@ class SmartCleaner:
         'empty':      '⬜ 空欄位',
     }
 
-    # 明顯不是資料的行關鍵字
     NON_DATA_KEYWORDS = [
         '###', '===', '---',
         '系統警告', '報表結束', '資料嚴重損毀',
         '公司名稱', '備註：', '備註:',
     ]
 
-    # Excel 常見錯誤值
     EXCEL_ERRORS = [
         '#VALUE!', '#N/A', '#DIV/0!', '#REF!',
         '#NAME?', '#NULL!', '#NUM!', 'N/A', 'NULL',
@@ -67,10 +59,9 @@ class SmartCleaner:
 
     @staticmethod
     def _is_non_data_row(row):
-        """判斷這一行是否為非資料行（標題裝飾、警告、結尾）"""
         row_str = ' '.join(str(v) for v in row.values if pd.notna(v))
         if not row_str.strip():
-            return False  # 空白行由 drop_duplicates 處理，這裡不重複
+            return False
         for kw in SmartCleaner.NON_DATA_KEYWORDS:
             if kw in row_str:
                 return True
@@ -97,9 +88,11 @@ class SmartCleaner:
         except (ValueError, TypeError):
             pass
 
+        # 不用 format='mixed'，改用 errors='coerce' 判斷
         try:
-            pd.to_datetime(s, errors='raise', format='mixed')
-            return 'date'
+            parsed = pd.to_datetime(s, errors='coerce')
+            if parsed.notna().sum() >= len(s) * 0.7:
+                return 'date'
         except (ValueError, TypeError):
             pass
 
@@ -133,8 +126,19 @@ class SmartCleaner:
     # 民國年 / 日期處理
     # ==========================================================
     @staticmethod
+    def _validate_date(y, mo, d):
+        try:
+            if not (1 <= mo <= 12):
+                return f"{y}-{mo:02d}-{d:02d}（無效日期）"
+            if not (1 <= d <= 31):
+                return f"{y}-{mo:02d}-{d:02d}（無效日期）"
+            ts = pd.Timestamp(year=y, month=mo, day=d)
+            return ts.strftime('%Y-%m-%d')
+        except Exception:
+            return f"{y}-{mo:02d}-{d:02d}（無效日期）"
+
+    @staticmethod
     def _convert_minguo_to_western(value):
-        """把民國年字串轉成西元日期字串（無法轉換則回傳原值）"""
         if pd.isna(value):
             return value
 
@@ -142,20 +146,20 @@ class SmartCleaner:
         if s == '' or s.lower() == 'nan':
             return np.nan
 
-        # 格式 1：民國115年5月25日
+        # 民國115年5月25日
         m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 格式 2：115年5月25日
+        # 115年5月25日
         m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if 1 <= y <= 200:  # 合理民國年範圍
+            if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 格式 3：115/5/20 或 115-5-20（三位數年視為民國）
+        # 115/5/20 或 115-5-20
         m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -164,25 +168,16 @@ class SmartCleaner:
 
         return value
 
-    @staticmethod
-    def _validate_date(y, mo, d):
-        """驗證日期是否合法，合法回傳 YYYY-MM-DD 字串，不合法回傳原值"""
-        try:
-            return pd.Timestamp(year=y, month=mo, day=d).strftime('%Y-%m-%d')
-        except (ValueError, TypeError):
-            return f"{y}-{mo:02d}-{d:02d}（無效日期）"
-
     # ==========================================================
     # 貨幣 / 數字清理
     # ==========================================================
     @staticmethod
     def _clean_currency_value(value):
-        """NT$ 5,000 → 5000， (8) → -8"""
         if pd.isna(value):
             return value
         s = str(value).strip()
 
-        # 會計負數格式 (8) 或 (1,200)
+        # 會計負數 (8)
         m = re.match(r'^\(([\d,\.]+)\)$', s)
         if m:
             try:
@@ -190,9 +185,11 @@ class SmartCleaner:
             except ValueError:
                 return value
 
-        # 移除貨幣符號、千分位
-        cleaned = re.sub(r'[NT\$\s,元]', '', s)
-        cleaned = cleaned.replace('NT', '').replace('$', '')
+        # 移除 NT$、$、逗號、空白、元
+        cleaned = s
+        for token in ['NT$', 'NT', '$', ',', ' ', '元']:
+            cleaned = cleaned.replace(token, '')
+
         try:
             if cleaned == '' or cleaned == '-':
                 return value
@@ -206,54 +203,48 @@ class SmartCleaner:
     @classmethod
     def clean_dataframe(cls, df, options=None):
         options = options or {}
-        df_clean = df.copy()
+        df_clean = df.copy().reset_index(drop=True)
         actions = []
 
-        # ---------------------------------------------------
         # 1. 移除非資料行
-        # ---------------------------------------------------
         if options.get('remove_non_data_rows', True):
-            mask = df_clean.apply(cls._is_non_data_row, axis=1)
-            removed = int(mask.sum())
-            if removed > 0:
-                df_clean = df_clean[~mask].reset_index(drop=True)
-                actions.append(f"✅ 移除 {removed} 行非資料列（警告 / 標題裝飾 / 結尾）")
+            try:
+                mask = df_clean.apply(cls._is_non_data_row, axis=1)
+                removed = int(mask.sum())
+                if removed > 0:
+                    df_clean = df_clean[~mask].reset_index(drop=True)
+                    actions.append(f"✅ 移除 {removed} 行非資料列（警告 / 標題裝飾 / 結尾）")
+            except Exception as e:
+                actions.append(f"⚠️ 非資料行偵測失敗：{e}")
 
-        # ---------------------------------------------------
         # 2. 清理 Excel 錯誤值
-        # ---------------------------------------------------
         if options.get('clean_excel_errors', True):
             total_fixed = 0
             for col in df_clean.columns:
-                s = df_clean[col].astype(str).str.strip()
-                mask = s.isin(cls.EXCEL_ERRORS)
-                total_fixed += int(mask.sum())
-                df_clean.loc[mask, col] = np.nan
+                for idx in df_clean.index:
+                    val = df_clean.at[idx, col]
+                    if pd.notna(val) and str(val).strip() in cls.EXCEL_ERRORS:
+                        df_clean.at[idx, col] = np.nan
+                        total_fixed += 1
             if total_fixed > 0:
                 actions.append(f"✅ 清理 {total_fixed} 個 Excel 錯誤值（#VALUE! 等）")
 
-        # ---------------------------------------------------
-        # 3. 移除完全重複列
-        # ---------------------------------------------------
+        # 3. 去重
         if options.get('drop_duplicates', True):
             before = len(df_clean)
-            df_clean = df_clean.drop_duplicates()
+            df_clean = df_clean.drop_duplicates().reset_index(drop=True)
             removed = before - len(df_clean)
             if removed > 0:
                 actions.append(f"✅ 移除 {removed} 筆完全重複的列")
 
-        # ---------------------------------------------------
-        # 4. 清理欄位名稱
-        # ---------------------------------------------------
+        # 4. 欄位名稱
         if options.get('clean_columns', True):
             new_cols = [str(c).strip() for c in df_clean.columns]
             if list(df_clean.columns) != new_cols:
                 df_clean.columns = new_cols
                 actions.append("✅ 清理欄位名稱的頭尾空白")
 
-        # ---------------------------------------------------
-        # 5. 文字欄位 trim
-        # ---------------------------------------------------
+        # 5. 文字 trim
         if options.get('trim_strings', True):
             touched = 0
             for col in df_clean.select_dtypes(include=['object']).columns:
@@ -266,26 +257,36 @@ class SmartCleaner:
             if touched:
                 actions.append(f"✅ 清理 {touched} 個文字欄位的頭尾空白")
 
-        # ---------------------------------------------------
-        # 6. 民國年轉西元 + 日期標準化 + 無效日期偵測
-        # ---------------------------------------------------
+        # 6. 民國年轉換 + 日期標準化
         if options.get('normalize_date', True):
             date_fixed = 0
             invalid_dates = 0
             for col in df_clean.columns:
-                ctype = cls.detect_column_type(df_clean[col])
+                try:
+                    ctype = cls.detect_column_type(df_clean[col])
+                except Exception:
+                    continue
 
-                # 6-1 民國年轉換（先掃描字串欄位）
                 if ctype in ('text', 'date_str', 'date'):
-                    converted = df_clean[col].apply(cls._convert_minguo_to_western)
-                    changed = (converted.astype(str) != df_clean[col].astype(str)).sum()
-                    if changed > 0:
-                        df_clean[col] = converted
-                        date_fixed += changed
-                        # 重新偵測類型
-                        ctype = cls.detect_column_type(df_clean[col])
+                    try:
+                        converted = df_clean[col].apply(cls._convert_minguo_to_western)
+                        # 計算有幾個改變
+                        changed = 0
+                        for old, new in zip(df_clean[col].tolist(), converted.tolist()):
+                            if str(old) != str(new):
+                                changed += 1
+                        if changed > 0:
+                            df_clean[col] = converted
+                            date_fixed += changed
+                    except Exception:
+                        pass
 
-                # 6-2 標準化為 YYYY-MM-DD
+                # 重新偵測
+                try:
+                    ctype = cls.detect_column_type(df_clean[col])
+                except Exception:
+                    continue
+
                 if ctype == 'date':
                     try:
                         parsed = pd.to_datetime(df_clean[col], errors='coerce')
@@ -300,45 +301,50 @@ class SmartCleaner:
             if invalid_dates > 0:
                 actions.append(f"⚠️ 偵測到 {invalid_dates} 個無效日期，已標記為空白")
 
-        # ---------------------------------------------------
-        # 7. 貨幣 / 會計數字清理
-        # ---------------------------------------------------
+        # 7. 貨幣清理
         if options.get('clean_currency', True):
             currency_fixed = 0
             for col in df_clean.columns:
-                ctype = cls.detect_column_type(df_clean[col])
+                try:
+                    ctype = cls.detect_column_type(df_clean[col])
+                except Exception:
+                    continue
                 if ctype == 'currency':
-                    original = df_clean[col].copy()
-                    df_clean[col] = df_clean[col].apply(cls._clean_currency_value)
-                    changed = (original.astype(str) != df_clean[col].astype(str)).sum()
-                    currency_fixed += changed
+                    try:
+                        original = df_clean[col].tolist()
+                        converted = [cls._clean_currency_value(v) for v in original]
+                        changed = sum(1 for o, n in zip(original, converted) if str(o) != str(n))
+                        df_clean[col] = converted
+                        currency_fixed += changed
+                    except Exception:
+                        pass
             if currency_fixed > 0:
                 actions.append(f"✅ 清理 {currency_fixed} 個貨幣 / 會計格式數字")
 
-        # ---------------------------------------------------
-        # 8. 電話標準化
-        # ---------------------------------------------------
+        # 8. 電話
         if options.get('normalize_phone', True):
             for col in df_clean.columns:
-                ctype = cls.detect_column_type(df_clean[col])
+                try:
+                    ctype = cls.detect_column_type(df_clean[col])
+                except Exception:
+                    continue
                 if ctype in ('phone_tw', 'mobile_tw'):
                     df_clean[col] = (df_clean[col].astype(str)
                                      .str.replace(r'[-\s\(\)]', '', regex=True))
                     actions.append(f"✅ 標準化「{col}」的電話格式")
 
-        # ---------------------------------------------------
         # 9. Email 小寫
-        # ---------------------------------------------------
         if options.get('normalize_email', True):
             for col in df_clean.columns:
-                ctype = cls.detect_column_type(df_clean[col])
+                try:
+                    ctype = cls.detect_column_type(df_clean[col])
+                except Exception:
+                    continue
                 if ctype == 'email':
                     df_clean[col] = df_clean[col].astype(str).str.lower()
                     actions.append(f"✅ 將「{col}」的 Email 轉為小寫")
 
-        # ---------------------------------------------------
         # 10. 填補空白
-        # ---------------------------------------------------
         if options.get('fill_na'):
             fill_value = options.get('fill_value', '')
             df_clean = df_clean.fillna(fill_value)
@@ -354,62 +360,62 @@ class SmartCleaner:
         anomalies = []
 
         for col in df.columns:
-            ctype = cls.detect_column_type(df[col])
+            try:
+                ctype = cls.detect_column_type(df[col])
+            except Exception:
+                continue
 
-            # 數值離群值
+            # 離群值
             if ctype == 'number':
-                s = pd.to_numeric(df[col], errors='coerce').dropna()
-                if len(s) > 10:
-                    q1, q3 = s.quantile(0.25), s.quantile(0.75)
-                    iqr = q3 - q1
-                    if iqr > 0:
-                        lo, hi = q1 - 3 * iqr, q3 + 3 * iqr
-                        outliers = s[(s < lo) | (s > hi)]
-                        if len(outliers) > 0:
-                            anomalies.append({
-                                '欄位': col,
-                                '類型': '數值離群值',
-                                '數量': len(outliers),
-                                '說明': f'超出 [{lo:.2f}, {hi:.2f}] 範圍',
-                            })
+                try:
+                    s = pd.to_numeric(df[col], errors='coerce').dropna()
+                    if len(s) > 10:
+                        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+                        iqr = q3 - q1
+                        if iqr > 0:
+                            lo, hi = q1 - 3 * iqr, q3 + 3 * iqr
+                            outliers = s[(s < lo) | (s > hi)]
+                            if len(outliers) > 0:
+                                anomalies.append({
+                                    '欄位': col,
+                                    '類型': '數值離群值',
+                                    '數量': len(outliers),
+                                    '說明': f'超出 [{lo:.2f}, {hi:.2f}] 範圍',
+                                })
+                except Exception:
+                    pass
 
             # 格式混用
             if ctype in ('phone_tw', 'mobile_tw'):
-                s = df[col].dropna().astype(str)
-                has_mobile = s.str.match(r'^09\d{8}$').any()
-                has_landline = s.str.match(r'^0\d{1,2}\-?\d{6,8}$').any()
-                if has_mobile and has_landline:
-                    anomalies.append({
-                        '欄位': col,
-                        '類型': '格式混用',
-                        '數量': len(s),
-                        '說明': '同一欄位包含手機與市話格式',
-                    })
+                try:
+                    s = df[col].dropna().astype(str)
+                    has_mobile = s.str.match(r'^09\d{8}$').any()
+                    has_landline = s.str.match(r'^0\d{1,2}\-?\d{6,8}$').any()
+                    if has_mobile and has_landline:
+                        anomalies.append({
+                            '欄位': col,
+                            '類型': '格式混用',
+                            '數量': len(s),
+                            '說明': '同一欄位包含手機與市話格式',
+                        })
+                except Exception:
+                    pass
 
-            # 負數數量偵測
+            # 負數數量
             col_lower = str(col).lower()
             if any(kw in col_lower for kw in ['數量', 'qty', 'quantity', '個數']):
-                s = pd.to_numeric(df[col], errors='coerce').dropna()
-                negatives = s[s < 0]
-                if len(negatives) > 0:
-                    anomalies.append({
-                        '欄位': col,
-                        '類型': '負數數量',
-                        '數量': len(negatives),
-                        '說明': '數量欄位出現負值，可能是輸入錯誤',
-                    })
-
-            # 文字卡在數字欄位
-            if ctype == 'text':
-                s = df[col].dropna().astype(str)
-                weird = s[s.str.match(r'^[a-zA-Z]{1,5}$')]
-                if len(weird) > 0 and any(kw in str(col).lower() for kw in ['價格', '單價', '金額', '數量']):
-                    anomalies.append({
-                        '欄位': col,
-                        '類型': '非數值內容',
-                        '數量': len(weird),
-                        '說明': '金額 / 數量欄位出現純文字',
-                    })
+                try:
+                    s = pd.to_numeric(df[col], errors='coerce').dropna()
+                    negatives = s[s < 0]
+                    if len(negatives) > 0:
+                        anomalies.append({
+                            '欄位': col,
+                            '類型': '負數數量',
+                            '數量': len(negatives),
+                            '說明': '數量欄位出現負值，可能是輸入錯誤',
+                        })
+                except Exception:
+                    pass
 
         return anomalies
 
@@ -427,11 +433,14 @@ class SmartCleaner:
 
         consistency_scores = []
         for col in df.columns:
-            ctype = cls.detect_column_type(df[col])
-            if ctype in cls.PATTERNS:
-                consistency_scores.append(
-                    cls._match_ratio(df[col], cls.PATTERNS[ctype])
-                )
+            try:
+                ctype = cls.detect_column_type(df[col])
+                if ctype in cls.PATTERNS:
+                    consistency_scores.append(
+                        cls._match_ratio(df[col], cls.PATTERNS[ctype])
+                    )
+            except Exception:
+                pass
         consistency = np.mean(consistency_scores) if consistency_scores else 1.0
 
         dup_ratio = 1 - (df.duplicated().sum() / len(df))
