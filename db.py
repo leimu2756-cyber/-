@@ -24,10 +24,16 @@ def get_database_url():
 # ---------- 建立 Engine ----------
 @st.cache_resource
 def get_engine():
-	url = get_database_url()
-	if url.startswith("sqlite"):
-		return create_engine(url, connect_args={"check_same_thread": False})
-	return create_engine(url)
+    url = get_database_url()
+    if url.startswith("sqlite"):
+        return create_engine(url, connect_args={"check_same_thread": False})
+    # 加入連線逾時（秒），避免卡死
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={"connect_timeout": 10},
+    )
 
 
 # ---------- Session 管理 ----------
@@ -48,45 +54,49 @@ def get_session():
 
 # ---------- 初始化資料表 ----------
 def init_db():
-	engine = get_engine()
-	with engine.connect() as conn:
-		conn.execute(text("""
-			CREATE TABLE IF NOT EXISTS users (
-				username    TEXT PRIMARY KEY,
-				password    TEXT NOT NULL,
-				contact     TEXT,
-				amount      TEXT DEFAULT '',
-				last5       TEXT DEFAULT '',
-				status      TEXT DEFAULT '未審核',
-				plan        TEXT DEFAULT 'free',
-				usage_count INTEGER DEFAULT 0,
-				created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-			)
-		"""))
-		conn.execute(text("""
-			CREATE TABLE IF NOT EXISTS usage_log (
-				id        SERIAL PRIMARY KEY,
-				username  TEXT,
-				filename  TEXT,
-				rows      INTEGER,
-				cols      INTEGER,
-				actions   TEXT,
-				timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-			)
-		"""))
-		conn.execute(text("""
-			CREATE TABLE IF NOT EXISTS feedback (
-				id        SERIAL PRIMARY KEY,
-				username  TEXT,
-				subject   TEXT,
-				message   TEXT,
-				contact   TEXT,
-				status    TEXT DEFAULT '未處理',
-				timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-			)
-		"""))
-		conn.commit()
-
+    """建立資料表，失敗時不讓 App 崩潰"""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS users (
+                    username    TEXT PRIMARY KEY,
+                    password    TEXT NOT NULL,
+                    contact     TEXT,
+                    amount      TEXT DEFAULT '',
+                    last5       TEXT DEFAULT '',
+                    status      TEXT DEFAULT '未審核',
+                    plan        TEXT DEFAULT 'free',
+                    usage_count INTEGER DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS usage_log (
+                    id        SERIAL PRIMARY KEY,
+                    username  TEXT,
+                    filename  TEXT,
+                    rows      INTEGER,
+                    cols      INTEGER,
+                    actions   TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id        SERIAL PRIMARY KEY,
+                    username  TEXT,
+                    subject   TEXT,
+                    message   TEXT,
+                    contact   TEXT,
+                    status    TEXT DEFAULT '未處理',
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+    except Exception as e:
+        # 印出錯誤但不要讓 App 崩潰
+        print(f"[init_db] 資料庫初始化失敗：{e}")
 
 # ---------- 輔助查詢函式 ----------
 def fetch_one(query, params=None):
