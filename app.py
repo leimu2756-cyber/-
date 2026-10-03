@@ -234,11 +234,14 @@ elif st.session_state['user_role'] == 'admin':
 # ============================================================
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
-    user_row = fetch_one(
-        "SELECT amount, last5, status FROM users WHERE username = :u",
-        {"u": current_user},
-    )
-    db_amount, db_last5, db_status = user_row
+    try:
+        user_row = fetch_one(
+            "SELECT amount, last5, status FROM users WHERE username = :u",
+            {"u": current_user},
+        )
+        db_amount, db_last5, db_status = user_row
+    except Exception:
+        db_amount, db_last5, db_status = '', '', '未審核'
 
     # --------------------------------------------------------
     # 4-A. 意見反饋
@@ -323,95 +326,168 @@ elif st.session_state['user_role'] == 'client':
             if uploaded_file is None:
                 st.info("👆 上傳檔案後，系統會自動清理，並在下方給你下載按鈕。")
             else:
-                # ---------- 安全讀取檔案 ----------
-                def smart_read(file):
-                    try:
-                        name = file.name.lower()
-                        if name.endswith('.csv'):
-                            try:
-                                preview = pd.read_csv(file, encoding='utf-8-sig', header=None, nrows=3)
-                            except UnicodeDecodeError:
-                                file.seek(0)
-                                preview = pd.read_csv(file, encoding='big5', header=None, nrows=3)
-                            file.seek(0)
-                        else:
-                            preview = pd.read_excel(file, header=None, nrows=3)
-                            file.seek(0)
-                    except Exception:
-                        return True
+                # ========================================================
+                # 讀取設定（可摺疊）
+                # ========================================================
+                with st.expander("⚙️ 讀取設定（標題判斷錯誤時再打開）", expanded=False):
+                    st.caption(
+                        "系統會自動跳過 ###、===、公司名稱 等垃圾列，並自動判斷哪一行是標題。"
+                        "如果判斷錯誤，可在下方手動指定。"
+                    )
+                    manual_mode = st.checkbox("手動指定標題位置", value=False)
 
-                    if len(preview) == 0:
-                        return True
+                    if manual_mode:
+                        skip_n = st.number_input(
+                            "跳過前幾行（垃圾行數）",
+                            min_value=0, max_value=100, value=2, step=1,
+                        )
+                        header_n = st.number_input(
+                            "第幾行是標題（跳過後算起，0 = 第一行；若無標題填 -1）",
+                            min_value=-1, max_value=100, value=0, step=1,
+                        )
+                    else:
+                        skip_n = 0
+                        header_n = 0
 
-                    try:
-                        first_row_raw = preview.iloc[0]
-                        if isinstance(first_row_raw, pd.Series):
-                            first_row_vals = [str(v) for v in first_row_raw.tolist()]
-                        else:
-                            first_row_vals = [str(first_row_raw)]
-                    except Exception:
-                        return True
-
-                    if not first_row_vals:
-                        return True
-
-                    def is_text_value(v):
+                # ========================================================
+                # 讀取工具函式
+                # ========================================================
+                def read_raw(file):
+                    """讀取原始檔案，一律不加標題"""
+                    file.seek(0)
+                    if file.name.lower().endswith('.csv'):
                         try:
-                            cleaned = (
-                                str(v)
-                                .replace('.', '')
-                                .replace('-', '')
-                                .replace('/', '')
-                                .replace(' ', '')
-                                .replace(',', '')
-                                .replace(':', '')
-                                .strip()
-                            )
-                            if cleaned == '' or cleaned.lower() == 'nan':
-                                return False
-                            return not cleaned.isdigit()
-                        except Exception:
-                            return False
+                            return pd.read_csv(file, encoding='utf-8-sig', header=None)
+                        except UnicodeDecodeError:
+                            file.seek(0)
+                            return pd.read_csv(file, encoding='big5', header=None)
+                    else:
+                        return pd.read_excel(file, header=None)
 
-                    text_count = sum(1 for v in first_row_vals if is_text_value(v))
-                    return text_count >= len(first_row_vals) * 0.6
+                def is_garbage_row(row):
+                    """判斷是否為垃圾行"""
+                    try:
+                        row_str = ' '.join(str(v) for v in row.values if pd.notna(v))
+                    except Exception:
+                        return False
+                    if not row_str.strip():
+                        return False
+                    for kw in ['###', '===', '---', '系統警告', '報表結束',
+                               '資料嚴重損毀', '公司名稱']:
+                        if kw in row_str:
+                            return True
+                    return False
 
+                def is_header_row(row):
+                    """判斷是否像標題行（大部分都是文字）"""
+                    try:
+                        vals = [str(v) for v in row.values if pd.notna(v) and str(v).strip()]
+                    except Exception:
+                        return False
+                    if not vals:
+                        return False
+                    text_count = 0
+                    for v in vals:
+                        cleaned = (
+                            str(v)
+                            .replace('.', '').replace('-', '').replace(',', '')
+                            .replace('/', '').replace(' ', '').strip()
+                        )
+                        if cleaned and not cleaned.isdigit():
+                            text_count += 1
+                    return text_count >= len(vals) * 0.7
+
+                def build_dataframe(df_raw, skip_n, header_n, auto_mode):
+                    """根據設定組出最終 DataFrame"""
+                    if skip_n > 0:
+                        df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
+
+                    if auto_mode:
+                        # 自動跳過垃圾行
+                        garbage_idx = [
+                            i for i in range(len(df_raw))
+                            if is_garbage_row(df_raw.iloc[i])
+                        ]
+                        if garbage_idx:
+                            df_raw = df_raw.drop(index=garbage_idx).reset_index(drop=True)
+
+                        # 自動判斷標題行
+                        if len(df_raw) > 0 and is_header_row(df_raw.iloc[0]):
+                            df = df_raw.copy()
+                            new_cols = []
+                            for i, c in enumerate(df.iloc[0].values):
+                                c_str = str(c).strip()
+                                if not c_str or c_str.lower() == 'nan':
+                                    c_str = f"欄位{i+1}"
+                                new_cols.append(c_str)
+                            df.columns = new_cols
+                            df = df[1:].reset_index(drop=True)
+                            return df
+                        else:
+                            df = df_raw.copy()
+                            df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
+                            return df
+                    else:
+                        # 手動模式
+                        if header_n == -1:
+                            df = df_raw.copy()
+                            df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
+                            return df
+                        elif 0 <= header_n < len(df_raw):
+                            df = df_raw.copy()
+                            new_cols = []
+                            for i, c in enumerate(df.iloc[header_n].values):
+                                c_str = str(c).strip()
+                                if not c_str or c_str.lower() == 'nan':
+                                    c_str = f"欄位{i+1}"
+                                new_cols.append(c_str)
+                            df.columns = new_cols
+                            df = df[header_n+1:].reset_index(drop=True)
+                            return df
+                        else:
+                            df = df_raw.copy()
+                            df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
+                            return df
+
+                # ========================================================
+                # 執行讀取
+                # ========================================================
                 with st.spinner("正在讀取檔案…"):
                     try:
-                        has_header = smart_read(uploaded_file)
-                        header_opt = 0 if has_header else None
-
-                        if uploaded_file.name.lower().endswith('.csv'):
-                            try:
-                                df = pd.read_csv(uploaded_file, encoding='utf-8-sig', header=header_opt)
-                            except UnicodeDecodeError:
-                                uploaded_file.seek(0)
-                                df = pd.read_csv(uploaded_file, encoding='big5', header=header_opt)
-                        else:
-                            df = pd.read_excel(uploaded_file, header=header_opt)
-
-                        if not has_header:
-                            df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
-
+                        df_raw = read_raw(uploaded_file)
+                        df = build_dataframe(
+                            df_raw, skip_n, header_n,
+                            auto_mode=(not manual_mode),
+                        )
                     except Exception as e:
                         st.error(f"讀取檔案失敗：{e}")
                         st.stop()
 
-                with st.spinner("AI 正在分析並自動清理…"):
-                    quality = SmartCleaner.quality_score(df)
-                    report = SmartCleaner.analyze_dataframe(df)
-                    anomalies = SmartCleaner.detect_anomalies(df)
+                st.caption(f"📊 讀取結果：{len(df)} 列 × {len(df.columns)} 欄")
 
-                    default_options = {
-                        'drop_duplicates': True,
-                        'clean_columns': True,
-                        'trim_strings': True,
-                        'normalize_phone': True,
-                        'normalize_date': True,
-                        'normalize_email': True,
-                    }
-                    df_clean, actions = SmartCleaner.clean_dataframe(df, default_options)
-                    new_quality = SmartCleaner.quality_score(df_clean)
+                # ---------- 自動清理 ----------
+                with st.spinner("AI 正在分析並自動清理…"):
+                    try:
+                        quality = SmartCleaner.quality_score(df)
+                        report = SmartCleaner.analyze_dataframe(df)
+                        anomalies = SmartCleaner.detect_anomalies(df)
+
+                        default_options = {
+                            'remove_non_data_rows': True,
+                            'clean_excel_errors': True,
+                            'drop_duplicates': True,
+                            'clean_columns': True,
+                            'trim_strings': True,
+                            'normalize_phone': True,
+                            'normalize_date': True,
+                            'normalize_email': True,
+                            'clean_currency': True,
+                        }
+                        df_clean, actions = SmartCleaner.clean_dataframe(df, default_options)
+                        new_quality = SmartCleaner.quality_score(df_clean)
+                    except Exception as e:
+                        st.error(f"清理失敗：{e}")
+                        st.stop()
 
                 # ---------- 下載區 ----------
                 st.markdown("---")
@@ -488,12 +564,15 @@ elif st.session_state['user_role'] == 'client':
 
                     if st.button("🔄 用新選項重新清理", type="secondary"):
                         custom_options = {
+                            'remove_non_data_rows': True,
+                            'clean_excel_errors': True,
                             'drop_duplicates': opt_dup,
                             'clean_columns': opt_col,
                             'trim_strings': opt_trim,
                             'normalize_phone': opt_phone,
                             'normalize_date': opt_date,
                             'normalize_email': opt_email,
+                            'clean_currency': True,
                         }
                         if opt_fill:
                             custom_options['fill_na'] = True
@@ -502,10 +581,16 @@ elif st.session_state['user_role'] == 'client':
                         st.rerun()
 
                 if st.session_state.get('_custom_options'):
-                    df_clean, actions = SmartCleaner.clean_dataframe(df, st.session_state['_custom_options'])
-                    new_quality = SmartCleaner.quality_score(df_clean)
-                    st.info(f"已套用自訂選項，品質分數：{new_quality}")
+                    try:
+                        df_clean, actions = SmartCleaner.clean_dataframe(
+                            df, st.session_state['_custom_options']
+                        )
+                        new_quality = SmartCleaner.quality_score(df_clean)
+                        st.info(f"已套用自訂選項，品質分數：{new_quality}")
+                    except Exception as e:
+                        st.error(f"自訂清理失敗：{e}")
 
+                # ---------- 寫入紀錄 ----------
                 try:
                     execute(
                         "INSERT INTO usage_log (username, filename, rows, cols, actions) "
