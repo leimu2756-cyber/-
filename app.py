@@ -15,13 +15,17 @@ from sqlalchemy import text
 MASTER_PASSWORD = '2012011220120629LryCsy'
 ADMIN_EMAIL = '717804lin@gmail.com'
 
-init_db()
-
 st.set_page_config(
     page_title="AI 資料清理工作台",
     page_icon="🧹",
     layout="wide",
 )
+
+# 先把畫面渲染出來，再初始化資料庫
+try:
+    init_db()
+except Exception as e:
+    st.warning(f"⚠️ 資料庫連線異常，部分功能可能無法使用：{e}")
 
 for key, default in [('logged_in', False), ('user_role', None), ('username', None)]:
     if key not in st.session_state:
