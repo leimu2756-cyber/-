@@ -8,6 +8,7 @@ from cleaner import SmartCleaner
 from db import get_engine, get_session, init_db, fetch_one, fetch_all, execute
 from sqlalchemy import text
 
+
 # ============================================================
 # 0. 設定
 # ============================================================
@@ -225,6 +226,9 @@ elif st.session_state['user_role'] == 'client':
     )
     db_amount, db_last5, db_status = user_row
 
+    # --------------------------------------------------------
+    # 4-A. 意見反饋
+    # --------------------------------------------------------
     if client_page == "💬 意見反饋":
         st.title("💬 意見反饋與客製化需求")
         st.markdown(f"""
@@ -262,8 +266,13 @@ elif st.session_state['user_role'] == 'client':
         st.divider()
         st.caption("💡 已送出過的反饋，可從管理員後台查看處理狀態。")
 
+    # --------------------------------------------------------
+    # 4-B. 資料清理工作台（上傳即清理）
+    # --------------------------------------------------------
     else:
         st.title(f"👋 歡迎回來，{current_user}")
+
+        # ---- 未開通 ----
         if db_status != '已開通':
             st.warning(
                 f"🔒 **目前帳號狀態：【{db_status}】** —— 請完成付款並回報，"
@@ -288,12 +297,9 @@ elif st.session_state['user_role'] == 'client':
                         st.rerun()
                     else:
                         st.warning("請完整填寫金額與末五碼")
-   
-                    st.info("🔒 隱私保護：所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
-     else:
-            # ========================================================
-            # 核心工作區：上傳即清理
-            # ========================================================
+
+        # ---- 已開通：上傳即清理 ----
+        else:
             st.success("🔓 **帳號狀態：【已開通】** —— 上傳檔案即可自動清理。")
 
             uploaded_file = st.file_uploader(
@@ -307,9 +313,7 @@ elif st.session_state['user_role'] == 'client':
             else:
                 # ---------- 自動判斷第一行是否為標題 ----------
                 def smart_read(file):
-                    """自動判斷第一行是否為標題，並讀取檔案"""
                     name = file.name.lower()
-                    # 先讀取前幾行來判斷
                     if name.endswith('.csv'):
                         try:
                             preview = pd.read_csv(file, encoding='utf-8-sig', header=None, nrows=3)
@@ -321,16 +325,15 @@ elif st.session_state['user_role'] == 'client':
                         preview = pd.read_excel(file, header=None, nrows=3)
                         file.seek(0)
 
-                    # 判斷邏輯：第一行如果是文字，第二行如果是數字或日期，就當作標題
                     first_row = preview.iloc[0].astype(str)
-                    has_header = True
                     if len(preview) >= 2:
-                        second_row = preview.iloc[1]
-                        # 如果第一行跟第二行型態差異大，第一行可能是標題
-                        text_count_1 = sum(1 for v in first_row if not v.replace('.', '').replace('-', '').isdigit())
-                        text_count_2 = sum(1 for v in second_row.astype(str) if not v.replace('.', '').replace('-', '').isdigit())
-                        # 如果第一行幾乎都是文字，第二行有數字，判斷為有標題
+                        text_count_1 = sum(
+                            1 for v in first_row
+                            if not v.replace('.', '').replace('-', '').replace('/', '').isdigit()
+                        )
                         has_header = text_count_1 >= len(first_row) * 0.6
+                    else:
+                        has_header = True
                     return has_header
 
                 with st.spinner("正在讀取檔案…"):
@@ -371,16 +374,13 @@ elif st.session_state['user_role'] == 'client':
                     df_clean, actions = SmartCleaner.clean_dataframe(df, default_options)
                     new_quality = SmartCleaner.quality_score(df_clean)
 
-                # ========================================================
-                # 最上方：大大的下載區（最顯眼）
-                # ========================================================
+                # ---------- 最上方：大大的下載區 ----------
                 st.markdown("---")
                 st.markdown("## ✅ 清理完成！點下方按鈕下載")
 
                 col_a, col_b = st.columns(2)
                 base = os.path.splitext(uploaded_file.name)[0]
 
-                # CSV 下載
                 csv_bytes = df_clean.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 with col_a:
                     st.download_button(
@@ -392,7 +392,6 @@ elif st.session_state['user_role'] == 'client':
                         type="primary",
                     )
 
-                # Excel 下載
                 excel_buffer = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                     df_clean.to_excel(writer, index=False, sheet_name='清理後')
@@ -406,16 +405,16 @@ elif st.session_state['user_role'] == 'client':
                         use_container_width=True,
                     )
 
-                # 一眼看懂結果
+                # ---------- 一眼看懂結果 ----------
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("原始資料", f"{len(df)} 列")
-                c2.metric("清理後", f"{len(df_clean)} 列", delta=f"-{len(df) - len(df_clean)}" if len(df) > len(df_clean) else "0")
-                c3.metric("品質分數", f"{new_quality} / 100", delta=f"+{round(new_quality - quality, 1)}" if new_quality > quality else "0")
+                removed = len(df) - len(df_clean)
+                c2.metric("清理後", f"{len(df_clean)} 列", delta=f"-{removed}" if removed > 0 else "0")
+                c3.metric("品質分數", f"{new_quality} / 100",
+                          delta=f"+{round(new_quality - quality, 1)}" if new_quality > quality else "0")
 
-                # ========================================================
-                # 折疊區：給想看細節的人
-                # ========================================================
+                # ---------- 折疊區 ----------
                 with st.expander("🔍 查看清理前後對比", expanded=False):
                     st.markdown("**清理前（前 5 列）**")
                     st.dataframe(df.head(5), use_container_width=True)
@@ -463,13 +462,12 @@ elif st.session_state['user_role'] == 'client':
                         st.session_state['_custom_options'] = custom_options
                         st.rerun()
 
-                # 如果有自訂選項，重新計算
                 if st.session_state.get('_custom_options'):
                     df_clean, actions = SmartCleaner.clean_dataframe(df, st.session_state['_custom_options'])
                     new_quality = SmartCleaner.quality_score(df_clean)
                     st.info(f"已套用自訂選項，品質分數：{new_quality}")
 
-                # 寫入使用紀錄
+                # ---------- 寫入紀錄 ----------
                 try:
                     execute(
                         "INSERT INTO usage_log (username, filename, rows, cols, actions) "
