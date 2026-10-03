@@ -1,13 +1,9 @@
 """
-智慧資料清理引擎 (Smart Data Cleaner) v3
+智慧資料清理引擎 (Smart Data Cleaner) v4
 更新：
-  1. 貨幣偵測放寬（容許空格、NT$、$、千分位、會計負號）
-  2. 無效日期標準化（2026/02/30 → 2026-02-30（無效日期））
-  3. 民國年轉西元（115年5月25日 → 2026-05-25）
-  4. 非資料行移除（###、===、系統警告、公司名稱、備註）
-  5. Excel 錯誤值清理（#VALUE!、#N/A、NaN）
-  6. 貨幣 / 會計數字清理（NT$ 5,000 → 5000、(8) → -8）
-  7. 異常偵測（負數數量、格式混用、離群值、非數值內容）
+  1. 空行 / 全逗號行視為非資料行，直接移除
+  2. 貨幣欄位判定門檻降到 40%（處理混合欄位）
+  3. 日期欄位判定門檻降到 40%，並加入日期格式比例偵測
 """
 
 import re
@@ -28,7 +24,6 @@ class SmartCleaner:
         'tax_id_tw': re.compile(r'^\d{8}$'),
         'date_str':  re.compile(r'^(\d{4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4})$'),
         'url':       re.compile(r'^https?://'),
-        # 放寬：容許 NT$、$、逗號、括號、負號、空格
         'currency':  re.compile(r'^[\sNT\$,\.\(\)\d\-]+$'),
     }
 
@@ -73,16 +68,36 @@ class SmartCleaner:
 
     @staticmethod
     def _is_non_data_row(row):
-        """判斷是否為非資料行"""
+        """判斷是否為非資料行（警告、標題裝飾、空行、全逗號行）"""
         try:
-            row_str = ' '.join(str(v) for v in row.values if pd.notna(v))
+            values = [v for v in row.values if pd.notna(v)]
         except Exception:
             return False
-        if not row_str.strip():
+
+        # 全部都是空值 → 非資料行
+        if len(values) == 0:
+            return True
+
+        # 把所有值組成字串
+        try:
+            row_str = ' '.join(str(v) for v in values)
+        except Exception:
             return False
+
+        # 去掉逗號、空白、tab 之後什麼都不剩 → 非資料行
+        cleaned = row_str.replace(',', '').replace(' ', '').replace('\t', '').strip()
+        if cleaned == '':
+            return True
+
+        # 只有單一符號（例如只有「-」或「.」） → 非資料行
+        if len(cleaned) <= 1 and not cleaned.isalnum():
+            return True
+
+        # 關鍵字比對
         for kw in SmartCleaner.NON_DATA_KEYWORDS:
             if kw in row_str:
                 return True
+
         return False
 
     # ==========================================================
@@ -98,18 +113,17 @@ class SmartCleaner:
         if len(s_str) == 0:
             return 'empty'
 
-        # 優先檢查：貨幣 / 數字混雜格式
+        # ---------- 優先：貨幣 / 數字混雜 ----------
         try:
             currency_like = s_str.str.match(r'^[\sNT\$,\.\(\)\d\-]+$').sum()
-            if currency_like / len(s_str) >= 0.7:
+            if len(s_str) > 0 and currency_like / len(s_str) >= 0.4:
                 pure_number = s_str.str.match(r'^-?\d+(\.\d+)?$').sum()
-                # 若純數字比例低於 90%，視為 currency
                 if pure_number / len(s_str) < 0.9:
                     return 'currency'
         except Exception:
             pass
 
-        # 一般 pattern 比對
+        # ---------- 一般 pattern 比對 ----------
         try:
             scores = {name: cls._match_ratio(series, pat)
                       for name, pat in cls.PATTERNS.items()}
@@ -119,19 +133,29 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # 數值
+        # ---------- 純數值 ----------
         try:
             pd.to_numeric(s)
             return 'number'
         except (ValueError, TypeError):
             pass
 
-        # 日期
+        # ---------- 日期（pandas 解析，門檻 40%）----------
         try:
             parsed = pd.to_datetime(s, errors='coerce')
-            if parsed.notna().sum() >= len(s) * 0.7:
+            if len(s) > 0 and parsed.notna().sum() >= len(s) * 0.4:
                 return 'date'
         except (ValueError, TypeError):
+            pass
+
+        # ---------- 日期格式字串（YYYY-MM-DD、YYY年MM月DD日）----------
+        try:
+            date_like = s_str.str.match(
+                r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}日?$'
+            ).sum()
+            if len(s_str) > 0 and date_like / len(s_str) >= 0.4:
+                return 'date_str'
+        except Exception:
             pass
 
         return 'text'
@@ -168,7 +192,6 @@ class SmartCleaner:
     # ==========================================================
     @staticmethod
     def _validate_date(y, mo, d):
-        """驗證日期是否合法，合法回傳 YYYY-MM-DD，不合法回傳標記字串"""
         try:
             if not (1 <= mo <= 12):
                 return f"{y}-{mo:02d}-{d:02d}（無效日期）"
@@ -181,7 +204,7 @@ class SmartCleaner:
 
     @staticmethod
     def _convert_minguo_to_western(value):
-        """民國年 → 西元日期字串"""
+        """民國年 / 各種日期格式 → 標準 YYYY-MM-DD"""
         if pd.isna(value):
             return value
 
@@ -209,7 +232,7 @@ class SmartCleaner:
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 已經是 4 位西元年：驗證是否為合法日期（抓 2026/02/30 這種）
+        # 四位西元年（驗證是否合法，抓 2026/02/30）
         m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -265,7 +288,7 @@ class SmartCleaner:
                 removed = int(mask.sum())
                 if removed > 0:
                     df_clean = df_clean[~mask].reset_index(drop=True)
-                    actions.append(f"✅ 移除 {removed} 行非資料列（警告 / 標題裝飾 / 結尾）")
+                    actions.append(f"✅ 移除 {removed} 行非資料列（警告 / 標題裝飾 / 空行）")
             except Exception as e:
                 actions.append(f"⚠️ 非資料行偵測失敗：{e}")
 
@@ -332,8 +355,8 @@ class SmartCleaner:
                     except Exception:
                         continue
 
-                    # 6-1 民國年轉換（對文字或日期欄位）
-                    if ctype in ('text', 'date_str', 'date'):
+                    # 6-1 民國年 / 日期格式轉換
+                    if ctype in ('text', 'date_str', 'date', 'currency'):
                         try:
                             original = df_clean[col].tolist()
                             converted = [
@@ -350,7 +373,7 @@ class SmartCleaner:
                         except Exception:
                             pass
 
-                    # 6-2 標準化為 YYYY-MM-DD（含無效日期標記）
+                    # 6-2 標記無效日期
                     try:
                         ctype = cls.detect_column_type(df_clean[col])
                     except Exception:
@@ -381,7 +404,7 @@ class SmartCleaner:
                 pass
 
             if date_fixed > 0:
-                actions.append(f"✅ 轉換 {date_fixed} 個民國年日期為西元")
+                actions.append(f"✅ 轉換 {date_fixed} 個民國年 / 日期格式為西元")
             if invalid_dates > 0:
                 actions.append(f"⚠️ 偵測到 {invalid_dates} 個無效日期，已標記")
 
@@ -513,7 +536,7 @@ class SmartCleaner:
                 except Exception:
                     pass
 
-            # 金額欄位出現純文字
+            # 金額 / 數量欄位出現純文字
             if any(kw in col_lower for kw in ['價格', '單價', '金額', '數量']):
                 try:
                     s = df[col].dropna().astype(str)
@@ -527,6 +550,20 @@ class SmartCleaner:
                         })
                 except Exception:
                     pass
+
+            # 無效日期標記
+            try:
+                s = df[col].dropna().astype(str)
+                invalid = s[s.str.contains('無效日期', na=False)]
+                if len(invalid) > 0:
+                    anomalies.append({
+                        '欄位': col,
+                        '類型': '無效日期',
+                        '數量': len(invalid),
+                        '說明': '日期欄位存在不存在的日期（如 2 月 30 日）',
+                    })
+            except Exception:
+                pass
 
         return anomalies
 
