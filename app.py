@@ -287,106 +287,200 @@ elif st.session_state['user_role'] == 'client':
                         st.rerun()
                     else:
                         st.warning("請完整填寫金額與末五碼")
-        else:
-            st.success("🔓 **帳號狀態：【已開通】** —— 所有工具皆可使用。")
+   
+                    st.info("🔒 隱私保護：所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
+                else:
+            # ========================================================
+            # 核心工作區：上傳即清理
+            # ========================================================
+            st.success("🔓 **帳號狀態：【已開通】** —— 上傳檔案即可自動清理。")
+
             uploaded_file = st.file_uploader(
-                "📤 上傳您的資料檔案（支援 .xlsx / .xls / .csv）",
+                "📤 把 Excel 或 CSV 拖進來（或點擊選擇檔案）",
                 type=["xlsx", "xls", "csv"],
+                help="支援 .xlsx / .xls / .csv，系統會自動清理並提供下載。",
             )
+
             if uploaded_file is None:
-                st.info("請上傳檔案以開始分析。上傳後系統會自動進行 AI 欄位識別。")
+                st.info("👆 上傳檔案後，系統會自動清理，並在下方給你下載按鈕。")
             else:
-                try:
-                    if uploaded_file.name.lower().endswith('.csv'):
+                # ---------- 自動判斷第一行是否為標題 ----------
+                def smart_read(file):
+                    """自動判斷第一行是否為標題，並讀取檔案"""
+                    name = file.name.lower()
+                    # 先讀取前幾行來判斷
+                    if name.endswith('.csv'):
                         try:
-                            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+                            preview = pd.read_csv(file, encoding='utf-8-sig', header=None, nrows=3)
                         except UnicodeDecodeError:
-                            uploaded_file.seek(0)
-                            df = pd.read_csv(uploaded_file, encoding='big5')
+                            file.seek(0)
+                            preview = pd.read_csv(file, encoding='big5', header=None, nrows=3)
+                        file.seek(0)
                     else:
-                        df = pd.read_excel(uploaded_file)
-                except Exception as e:
-                    st.error(f"讀取檔案失敗：{e}")
-                    st.stop()
+                        preview = pd.read_excel(file, header=None, nrows=3)
+                        file.seek(0)
 
-                st.subheader(f"📄 原始檔案預覽（{len(df)} 列 × {len(df.columns)} 欄）")
-                st.dataframe(df.head(10), use_container_width=True)
+                    # 判斷邏輯：第一行如果是文字，第二行如果是數字或日期，就當作標題
+                    first_row = preview.iloc[0].astype(str)
+                    has_header = True
+                    if len(preview) >= 2:
+                        second_row = preview.iloc[1]
+                        # 如果第一行跟第二行型態差異大，第一行可能是標題
+                        text_count_1 = sum(1 for v in first_row if not v.replace('.', '').replace('-', '').isdigit())
+                        text_count_2 = sum(1 for v in second_row.astype(str) if not v.replace('.', '').replace('-', '').isdigit())
+                        # 如果第一行幾乎都是文字，第二行有數字，判斷為有標題
+                        has_header = text_count_1 >= len(first_row) * 0.6
+                    return has_header
 
-                st.divider()
-                st.subheader("🤖 AI 欄位識別與品質報告")
-                with st.spinner("AI 正在分析欄位類型…"):
+                with st.spinner("正在讀取檔案…"):
+                    try:
+                        has_header = smart_read(uploaded_file)
+                        header_opt = 0 if has_header else None
+
+                        if uploaded_file.name.lower().endswith('.csv'):
+                            try:
+                                df = pd.read_csv(uploaded_file, encoding='utf-8-sig', header=header_opt)
+                            except UnicodeDecodeError:
+                                uploaded_file.seek(0)
+                                df = pd.read_csv(uploaded_file, encoding='big5', header=header_opt)
+                        else:
+                            df = pd.read_excel(uploaded_file, header=header_opt)
+
+                        if not has_header:
+                            df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
+
+                    except Exception as e:
+                        st.error(f"讀取檔案失敗：{e}")
+                        st.stop()
+
+                # ---------- 自動清理（預設全開） ----------
+                with st.spinner("AI 正在分析並自動清理…"):
                     quality = SmartCleaner.quality_score(df)
                     report = SmartCleaner.analyze_dataframe(df)
                     anomalies = SmartCleaner.detect_anomalies(df)
 
+                    default_options = {
+                        'drop_duplicates': True,
+                        'clean_columns': True,
+                        'trim_strings': True,
+                        'normalize_phone': True,
+                        'normalize_date': True,
+                        'normalize_email': True,
+                    }
+                    df_clean, actions = SmartCleaner.clean_dataframe(df, default_options)
+                    new_quality = SmartCleaner.quality_score(df_clean)
+
+                # ========================================================
+                # 最上方：大大的下載區（最顯眼）
+                # ========================================================
+                st.markdown("---")
+                st.markdown("## ✅ 清理完成！點下方按鈕下載")
+
+                col_a, col_b = st.columns(2)
+                base = os.path.splitext(uploaded_file.name)[0]
+
+                # CSV 下載
+                csv_bytes = df_clean.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                with col_a:
+                    st.download_button(
+                        label="📄 下載 CSV",
+                        data=csv_bytes,
+                        file_name=f"{base}_cleaned.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        type="primary",
+                    )
+
+                # Excel 下載
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    df_clean.to_excel(writer, index=False, sheet_name='清理後')
+                excel_bytes = excel_buffer.getvalue()
+                with col_b:
+                    st.download_button(
+                        label="📊 下載 Excel",
+                        data=excel_bytes,
+                        file_name=f"{base}_cleaned.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+                # 一眼看懂結果
+                st.markdown("---")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("資料品質分數", f"{quality} / 100")
-                c2.metric("偵測到的異常", f"{len(anomalies)} 項")
-                c3.metric("重複列數", int(df.duplicated().sum()))
+                c1.metric("原始資料", f"{len(df)} 列")
+                c2.metric("清理後", f"{len(df_clean)} 列", delta=f"-{len(df) - len(df_clean)}" if len(df) > len(df_clean) else "0")
+                c3.metric("品質分數", f"{new_quality} / 100", delta=f"+{round(new_quality - quality, 1)}" if new_quality > quality else "0")
 
-                st.markdown("**🔍 欄位分析**")
-                st.dataframe(report.drop(columns=['_raw_type']), use_container_width=True)
+                # ========================================================
+                # 折疊區：給想看細節的人
+                # ========================================================
+                with st.expander("🔍 查看清理前後對比", expanded=False):
+                    st.markdown("**清理前（前 5 列）**")
+                    st.dataframe(df.head(5), use_container_width=True)
+                    st.markdown("**清理後（前 5 列）**")
+                    st.dataframe(df_clean.head(5), use_container_width=True)
 
-                if anomalies:
-                    st.markdown("**⚠️ 異常警告**")
-                    st.dataframe(pd.DataFrame(anomalies), use_container_width=True)
+                with st.expander("📋 系統做了哪些處理？", expanded=True):
+                    if actions:
+                        for a in actions:
+                            st.write(a)
+                    else:
+                        st.write("（資料本來就很乾淨，沒有需要處理的地方）")
 
-                st.divider()
-                st.subheader("🧹 一鍵清理選項")
-                with st.expander("進階設定", expanded=False):
+                with st.expander("🤖 AI 欄位識別報告", expanded=False):
+                    st.dataframe(report.drop(columns=['_raw_type']), use_container_width=True)
+                    if anomalies:
+                        st.markdown("**⚠️ 異常警告**")
+                        st.dataframe(pd.DataFrame(anomalies), use_container_width=True)
+                    else:
+                        st.success("沒有偵測到明顯異常。")
+
+                with st.expander("⚙️ 進階選項（想手動調整再打開）", expanded=False):
+                    st.caption("如果你想要不同的清理方式，可以在這裡調整後重新清理。")
                     opt_dup = st.checkbox("移除完全重複的列", value=True)
                     opt_col = st.checkbox("清理欄位名稱的頭尾空白", value=True)
                     opt_trim = st.checkbox("清理文字欄位的頭尾空白", value=True)
-                    opt_phone = st.checkbox("標準化電話格式（移除 - 和空白）", value=True)
-                    opt_date = st.checkbox("標準化日期格式為 YYYY-MM-DD", value=True)
+                    opt_phone = st.checkbox("標準化電話格式", value=True)
+                    opt_date = st.checkbox("標準化日期格式", value=True)
                     opt_email = st.checkbox("Email 轉為小寫", value=True)
                     opt_fill = st.checkbox("填補空白值", value=False)
                     fill_val = st.text_input("填補值", value="", disabled=not opt_fill)
 
-                if st.button("🚀 執行智慧清理", type="primary"):
-                    options = {
-                        'drop_duplicates': opt_dup,
-                        'clean_columns': opt_col,
-                        'trim_strings': opt_trim,
-                        'normalize_phone': opt_phone,
-                        'normalize_date': opt_date,
-                        'normalize_email': opt_email,
-                    }
-                    if opt_fill:
-                        options['fill_na'] = True
-                        options['fill_value'] = fill_val
+                    if st.button("🔄 用新選項重新清理", type="secondary"):
+                        custom_options = {
+                            'drop_duplicates': opt_dup,
+                            'clean_columns': opt_col,
+                            'trim_strings': opt_trim,
+                            'normalize_phone': opt_phone,
+                            'normalize_date': opt_date,
+                            'normalize_email': opt_email,
+                        }
+                        if opt_fill:
+                            custom_options['fill_na'] = True
+                            custom_options['fill_value'] = fill_val
+                        st.session_state['_custom_options'] = custom_options
+                        st.rerun()
 
-                    with st.spinner("正在清理資料…"):
-                        df_clean, actions = SmartCleaner.clean_dataframe(df, options)
-                        new_quality = SmartCleaner.quality_score(df_clean)
+                # 如果有自訂選項，重新計算
+                if st.session_state.get('_custom_options'):
+                    df_clean, actions = SmartCleaner.clean_dataframe(df, st.session_state['_custom_options'])
+                    new_quality = SmartCleaner.quality_score(df_clean)
+                    st.info(f"已套用自訂選項，品質分數：{new_quality}")
 
-                    st.success(f"清理完成！品質分數：{quality} → **{new_quality}**")
-
-                    if actions:
-                        with st.expander("📋 執行紀錄", expanded=True):
-                            for a in actions:
-                                st.write(a)
-
-                    st.markdown("**✅ 清理後預覽**")
-                    st.dataframe(df_clean.head(10), use_container_width=True)
-
-                    csv_bytes = df_clean.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-                    base = os.path.splitext(uploaded_file.name)[0]
-                    st.download_button(
-                        label="📥 下載清理後的 CSV",
-                        data=csv_bytes,
-                        file_name=f"{base}_cleaned.csv",
-                        mime="text/csv",
-                        type="primary",
-                    )
-
+                # 寫入使用紀錄
+                try:
                     execute(
                         "INSERT INTO usage_log (username, filename, rows, cols, actions) "
                         "VALUES (:u, :f, :r, :c, :a)",
-                        {"u": current_user, "f": uploaded_file.name, "r": len(df_clean), "c": len(df_clean.columns), "a": ' | '.join(actions)},
+                        {"u": current_user, "f": uploaded_file.name, "r": len(df_clean),
+                         "c": len(df_clean.columns), "a": ' | '.join(actions)},
                     )
                     execute(
                         "UPDATE users SET usage_count = usage_count + 1 WHERE username = :u",
                         {"u": current_user},
                     )
-                    st.info("🔒 隱私保護：所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
+                except Exception:
+                    pass
+
+                st.caption("🔒 所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
