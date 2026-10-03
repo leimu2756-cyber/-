@@ -21,7 +21,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# 先把畫面渲染出來，再初始化資料庫
 try:
     init_db()
 except Exception as e:
@@ -48,9 +47,13 @@ if not st.session_state['logged_in']:
             if not u or not p:
                 st.sidebar.warning("請輸入帳號與密碼")
             else:
-                row = fetch_one(
-                    "SELECT password FROM users WHERE username = :u", {"u": u}
-                )
+                try:
+                    row = fetch_one(
+                        "SELECT password FROM users WHERE username = :u", {"u": u}
+                    )
+                except Exception as e:
+                    st.sidebar.error(f"資料庫連線失敗：{e}")
+                    row = None
                 if row and bcrypt.checkpw(p.encode('utf-8'), row[0].encode('utf-8')):
                     st.session_state.update(
                         logged_in=True, user_role='client', username=u
@@ -67,19 +70,26 @@ if not st.session_state['logged_in']:
             if not (u and p and contact):
                 st.sidebar.warning("請填寫所有欄位")
             else:
-                existing = fetch_one(
-                    "SELECT username FROM users WHERE username = :u", {"u": u}
-                )
+                try:
+                    existing = fetch_one(
+                        "SELECT username FROM users WHERE username = :u", {"u": u}
+                    )
+                except Exception as e:
+                    st.sidebar.error(f"資料庫連線失敗：{e}")
+                    existing = None
                 if existing:
                     st.sidebar.error("此帳號已被註冊")
                 else:
                     hashed = bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt())
-                    execute(
-                        "INSERT INTO users (username, password, contact) "
-                        "VALUES (:u, :p, :c)",
-                        {"u": u, "p": hashed.decode('utf-8'), "c": contact},
-                    )
-                    st.sidebar.success("註冊成功！請登入並回報匯款資訊。")
+                    try:
+                        execute(
+                            "INSERT INTO users (username, password, contact) "
+                            "VALUES (:u, :p, :c)",
+                            {"u": u, "p": hashed.decode('utf-8'), "c": contact},
+                        )
+                        st.sidebar.success("註冊成功！請登入並回報匯款資訊。")
+                    except Exception as e:
+                        st.sidebar.error(f"註冊失敗：{e}")
 
     elif nav == "管理員後台":
         mp = st.sidebar.text_input("管理員密碼", type="password")
@@ -271,12 +281,11 @@ elif st.session_state['user_role'] == 'client':
         st.caption("💡 已送出過的反饋，可從管理員後台查看處理狀態。")
 
     # --------------------------------------------------------
-    # 4-B. 資料清理工作台（上傳即清理）
+    # 4-B. 資料清理工作台
     # --------------------------------------------------------
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
-        # ---- 未開通 ----
         if db_status != '已開通':
             st.warning(
                 f"🔒 **目前帳號狀態：【{db_status}】** —— 請完成付款並回報，"
@@ -302,7 +311,6 @@ elif st.session_state['user_role'] == 'client':
                     else:
                         st.warning("請完整填寫金額與末五碼")
 
-        # ---- 已開通：上傳即清理 ----
         else:
             st.success("🔓 **帳號狀態：【已開通】** —— 上傳檔案即可自動清理。")
 
@@ -315,8 +323,8 @@ elif st.session_state['user_role'] == 'client':
             if uploaded_file is None:
                 st.info("👆 上傳檔案後，系統會自動清理，並在下方給你下載按鈕。")
             else:
-                                def smart_read(file):
-                    """安全地判斷第一行是否為標題"""
+                # ---------- 安全讀取檔案 ----------
+                def smart_read(file):
                     try:
                         name = file.name.lower()
                         if name.endswith('.csv'):
@@ -330,18 +338,16 @@ elif st.session_state['user_role'] == 'client':
                             preview = pd.read_excel(file, header=None, nrows=3)
                             file.seek(0)
                     except Exception:
-                        return True  # 讀不到就預設有標題
+                        return True
 
                     if len(preview) == 0:
                         return True
 
-                    # 安全地取得第一列，一律轉成 list of str
                     try:
                         first_row_raw = preview.iloc[0]
                         if isinstance(first_row_raw, pd.Series):
                             first_row_vals = [str(v) for v in first_row_raw.tolist()]
                         else:
-                            # 邊緣情況：回傳純量
                             first_row_vals = [str(first_row_raw)]
                     except Exception:
                         return True
@@ -350,7 +356,6 @@ elif st.session_state['user_role'] == 'client':
                         return True
 
                     def is_text_value(v):
-                        """判斷一個值是不是『文字型』（非數字）"""
                         try:
                             cleaned = (
                                 str(v)
@@ -370,6 +375,7 @@ elif st.session_state['user_role'] == 'client':
 
                     text_count = sum(1 for v in first_row_vals if is_text_value(v))
                     return text_count >= len(first_row_vals) * 0.6
+
                 with st.spinner("正在讀取檔案…"):
                     try:
                         has_header = smart_read(uploaded_file)
@@ -391,7 +397,6 @@ elif st.session_state['user_role'] == 'client':
                         st.error(f"讀取檔案失敗：{e}")
                         st.stop()
 
-                # ---------- 自動清理（預設全開） ----------
                 with st.spinner("AI 正在分析並自動清理…"):
                     quality = SmartCleaner.quality_score(df)
                     report = SmartCleaner.analyze_dataframe(df)
@@ -408,7 +413,7 @@ elif st.session_state['user_role'] == 'client':
                     df_clean, actions = SmartCleaner.clean_dataframe(df, default_options)
                     new_quality = SmartCleaner.quality_score(df_clean)
 
-                # ---------- 最上方：大大的下載區 ----------
+                # ---------- 下載區 ----------
                 st.markdown("---")
                 st.markdown("## ✅ 清理完成！點下方按鈕下載")
 
@@ -439,7 +444,7 @@ elif st.session_state['user_role'] == 'client':
                         use_container_width=True,
                     )
 
-                # ---------- 一眼看懂結果 ----------
+                # ---------- 結果摘要 ----------
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("原始資料", f"{len(df)} 列")
@@ -470,8 +475,8 @@ elif st.session_state['user_role'] == 'client':
                     else:
                         st.success("沒有偵測到明顯異常。")
 
-                with st.expander("⚙️ 進階選項（想手動調整再打開）", expanded=False):
-                    st.caption("如果你想要不同的清理方式，可以在這裡調整後重新清理。")
+                with st.expander("⚙️ 進階選項", expanded=False):
+                    st.caption("想手動調整再打開。")
                     opt_dup = st.checkbox("移除完全重複的列", value=True)
                     opt_col = st.checkbox("清理欄位名稱的頭尾空白", value=True)
                     opt_trim = st.checkbox("清理文字欄位的頭尾空白", value=True)
@@ -501,7 +506,6 @@ elif st.session_state['user_role'] == 'client':
                     new_quality = SmartCleaner.quality_score(df_clean)
                     st.info(f"已套用自訂選項，品質分數：{new_quality}")
 
-                # ---------- 寫入紀錄 ----------
                 try:
                     execute(
                         "INSERT INTO usage_log (username, filename, rows, cols, actions) "
