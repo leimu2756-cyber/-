@@ -335,6 +335,10 @@ elif st.session_state['user_role'] == 'client':
 
             if uploaded_file is None:
                 st.info("👆 上傳檔案後，系統會自動清理，並在下方給你下載按鈕。")
+                st.caption(
+                    "💡 提醒：如果 Excel 含有公式（如 `=A1*B1`），"
+                    "系統無法自動計算。建議先在 Excel 打開檔案並存檔，讓公式產生計算結果。"
+                )
             else:
                 with st.expander("⚙️ 讀取設定（標題判斷錯誤時再打開）", expanded=False):
                     st.caption(
@@ -381,10 +385,6 @@ elif st.session_state['user_role'] == 'client':
                     return False
 
                 def is_header_row(row):
-                    """判斷是否像表頭：
-                    1. 填充率 >= 50%（非空值比例）
-                    2. 非空值中 >= 60% 是文字
-                    """
                     try:
                         vals = list(row.values)
                     except Exception:
@@ -401,12 +401,10 @@ elif st.session_state['user_role'] == 'client':
                     if total_cols == 0:
                         return False
 
-                    # 填充率過低 → 是大標題，不是表頭
                     fill_ratio = len(non_empty) / total_cols
                     if fill_ratio < 0.5:
                         return False
 
-                    # 文字比例
                     text_count = 0
                     for v in non_empty:
                         cleaned = (
@@ -424,7 +422,6 @@ elif st.session_state['user_role'] == 'client':
                         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
                     if auto_mode:
-                        # 1. 移除垃圾行
                         garbage_idx = [
                             i for i in range(len(df_raw))
                             if is_garbage_row(df_raw.iloc[i])
@@ -432,7 +429,6 @@ elif st.session_state['user_role'] == 'client':
                         if garbage_idx:
                             df_raw = df_raw.drop(index=garbage_idx).reset_index(drop=True)
 
-                        # 2. 在前 10 行中，找第一個「表頭行」
                         header_idx = None
                         for i in range(min(len(df_raw), 10)):
                             if is_header_row(df_raw.iloc[i]):
@@ -488,6 +484,22 @@ elif st.session_state['user_role'] == 'client':
 
                 st.caption(f"📊 讀取結果：{len(df)} 列 × {len(df.columns)} 欄")
 
+                # ---------- 檢查公式欄位 ----------
+                formula_warning = False
+                try:
+                    empty_cols = [col for col in df.columns if df[col].isna().all()]
+                    if empty_cols:
+                        formula_warning = True
+                except Exception:
+                    pass
+
+                if formula_warning:
+                    st.warning(
+                        "⚠️ **偵測到空白欄位**：可能是 Excel 公式未計算，"
+                        "pandas 無法讀取公式結果。建議先在 Excel 打開檔案並存檔一次，"
+                        "再上傳。"
+                    )
+
                 with st.spinner("AI 正在分析並自動清理…"):
                     try:
                         quality = SmartCleaner.quality_score(df)
@@ -498,6 +510,7 @@ elif st.session_state['user_role'] == 'client':
                             'remove_non_data_rows': True,
                             'clean_excel_errors': True,
                             'drop_duplicates': True,
+                            'remove_summary_rows': False,
                             'clean_columns': True,
                             'trim_strings': True,
                             'normalize_phone': True,
@@ -572,6 +585,22 @@ elif st.session_state['user_role'] == 'client':
 
                 with st.expander("⚙️ 進階選項", expanded=False):
                     st.caption("想手動調整再打開。")
+
+                    # 彙總列偵測提示
+                    try:
+                        summary_mask = df.apply(SmartCleaner._is_summary_row, axis=1)
+                        summary_count = int(summary_mask.sum())
+                    except Exception:
+                        summary_count = 0
+
+                    if summary_count > 0:
+                        st.info(f"💡 偵測到 {summary_count} 行彙總列（總計 / 小計 / 合計）")
+
+                    opt_remove_summary = st.checkbox(
+                        "移除彙總列（總計 / 小計 / 合計）",
+                        value=False,
+                        help="如果你的報表有「總計」列，且你只想要明細資料，請勾選此項。",
+                    )
                     opt_dup = st.checkbox("移除完全重複的列", value=True)
                     opt_col = st.checkbox("清理欄位名稱的頭尾空白", value=True)
                     opt_trim = st.checkbox("清理文字欄位的頭尾空白", value=True)
@@ -586,6 +615,7 @@ elif st.session_state['user_role'] == 'client':
                             'remove_non_data_rows': True,
                             'clean_excel_errors': True,
                             'drop_duplicates': opt_dup,
+                            'remove_summary_rows': opt_remove_summary,
                             'clean_columns': opt_col,
                             'trim_strings': opt_trim,
                             'normalize_phone': opt_phone,
