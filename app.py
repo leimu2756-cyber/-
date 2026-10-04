@@ -19,7 +19,24 @@ st.set_page_config(
     page_title="AI 資料清理工作台",
     page_icon="🧹",
     layout="wide",
+    toolbarMode="hidden",
 )
+
+# ---------- 隱藏 Streamlit 預設 UI ----------
+st.markdown("""
+<style>
+    /* 隱藏右上角工具列 */
+    [data-testid="stToolbar"] { display: none !important; }
+    /* 隱藏頂部 header */
+    header[data-testid="stHeader"] { display: none !important; }
+    /* 隱藏頁尾 */
+    footer { visibility: hidden !important; }
+    /* 隱藏漢堡選單 */
+    #MainMenu { visibility: hidden !important; }
+    /* 隱藏 deploy 按鈕 */
+    [data-testid="stAppDeployButton"] { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
 
 try:
     init_db()
@@ -403,7 +420,6 @@ elif st.session_state['user_role'] == 'client':
                         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
                     if auto_mode:
-                        # 自動跳過垃圾行
                         garbage_idx = [
                             i for i in range(len(df_raw))
                             if is_garbage_row(df_raw.iloc[i])
@@ -411,7 +427,6 @@ elif st.session_state['user_role'] == 'client':
                         if garbage_idx:
                             df_raw = df_raw.drop(index=garbage_idx).reset_index(drop=True)
 
-                        # 自動判斷標題行
                         if len(df_raw) > 0 and is_header_row(df_raw.iloc[0]):
                             df = df_raw.copy()
                             new_cols = []
@@ -428,7 +443,6 @@ elif st.session_state['user_role'] == 'client':
                             df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
                             return df
                     else:
-                        # 手動模式
                         if header_n == -1:
                             df = df_raw.copy()
                             df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
