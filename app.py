@@ -19,7 +19,6 @@ st.set_page_config(
     page_title="AI 資料清理工作台",
     page_icon="🧹",
     layout="wide",
-    toolbarMode="hidden",
 )
 
 # ---------- 隱藏 Streamlit 預設 UI ----------
@@ -343,9 +342,6 @@ elif st.session_state['user_role'] == 'client':
             if uploaded_file is None:
                 st.info("👆 上傳檔案後，系統會自動清理，並在下方給你下載按鈕。")
             else:
-                # ========================================================
-                # 讀取設定（可摺疊）
-                # ========================================================
                 with st.expander("⚙️ 讀取設定（標題判斷錯誤時再打開）", expanded=False):
                     st.caption(
                         "系統會自動跳過 ###、===、公司名稱 等垃圾列，並自動判斷哪一行是標題。"
@@ -366,11 +362,7 @@ elif st.session_state['user_role'] == 'client':
                         skip_n = 0
                         header_n = 0
 
-                # ========================================================
-                # 讀取工具函式
-                # ========================================================
                 def read_raw(file):
-                    """讀取原始檔案，一律不加標題"""
                     file.seek(0)
                     if file.name.lower().endswith('.csv'):
                         try:
@@ -382,7 +374,6 @@ elif st.session_state['user_role'] == 'client':
                         return pd.read_excel(file, header=None)
 
                 def is_garbage_row(row):
-                    """判斷是否為垃圾行"""
                     try:
                         row_str = ' '.join(str(v) for v in row.values if pd.notna(v))
                     except Exception:
@@ -396,7 +387,6 @@ elif st.session_state['user_role'] == 'client':
                     return False
 
                 def is_header_row(row):
-                    """判斷是否像標題行（大部分都是文字）"""
                     try:
                         vals = [str(v) for v in row.values if pd.notna(v) and str(v).strip()]
                     except Exception:
@@ -415,7 +405,6 @@ elif st.session_state['user_role'] == 'client':
                     return text_count >= len(vals) * 0.7
 
                 def build_dataframe(df_raw, skip_n, header_n, auto_mode):
-                    """根據設定組出最終 DataFrame"""
                     if skip_n > 0:
                         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
@@ -463,9 +452,6 @@ elif st.session_state['user_role'] == 'client':
                             df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
                             return df
 
-                # ========================================================
-                # 執行讀取
-                # ========================================================
                 with st.spinner("正在讀取檔案…"):
                     try:
                         df_raw = read_raw(uploaded_file)
@@ -479,7 +465,6 @@ elif st.session_state['user_role'] == 'client':
 
                 st.caption(f"📊 讀取結果：{len(df)} 列 × {len(df.columns)} 欄")
 
-                # ---------- 自動清理 ----------
                 with st.spinner("AI 正在分析並自動清理…"):
                     try:
                         quality = SmartCleaner.quality_score(df)
@@ -503,7 +488,6 @@ elif st.session_state['user_role'] == 'client':
                         st.error(f"清理失敗：{e}")
                         st.stop()
 
-                # ---------- 下載區 ----------
                 st.markdown("---")
                 st.markdown("## ✅ 清理完成！點下方按鈕下載")
 
@@ -534,7 +518,6 @@ elif st.session_state['user_role'] == 'client':
                         use_container_width=True,
                     )
 
-                # ---------- 結果摘要 ----------
                 st.markdown("---")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("原始資料", f"{len(df)} 列")
@@ -543,7 +526,6 @@ elif st.session_state['user_role'] == 'client':
                 c3.metric("品質分數", f"{new_quality} / 100",
                           delta=f"+{round(new_quality - quality, 1)}" if new_quality > quality else "0")
 
-                # ---------- 折疊區 ----------
                 with st.expander("🔍 查看清理前後對比", expanded=False):
                     st.markdown("**清理前（前 5 列）**")
                     st.dataframe(df.head(5), use_container_width=True)
@@ -604,7 +586,6 @@ elif st.session_state['user_role'] == 'client':
                     except Exception as e:
                         st.error(f"自訂清理失敗：{e}")
 
-                # ---------- 寫入紀錄 ----------
                 try:
                     execute(
                         "INSERT INTO usage_log (username, filename, rows, cols, actions) "
