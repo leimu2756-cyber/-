@@ -1,9 +1,8 @@
 """
-智慧資料清理引擎 (Smart Data Cleaner) v5
-新增：
-  - 中文大寫數字解析（參拾伍萬元整 → 350000）
-  - 全形半形轉換（０９１２ → 0912）
-  - 儲存格換行處理（Alt+Enter → 空格）
+智慧資料清理引擎 (Smart Data Cleaner) v6
+更新：
+  - date_str 正則支援三位數年份（民國年 115/07/15）
+  - 日期格式偵測支援中文日期（115年7月17日）
 """
 
 import re
@@ -11,9 +10,6 @@ import pandas as pd
 import numpy as np
 
 
-# ==========================================================
-# 中文數字對照表（放在 class 外面，避免重複建立）
-# ==========================================================
 CN_NUM = {
     '零': 0, '〇': 0,
     '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
@@ -34,16 +30,13 @@ CN_SUFFIXES = ['元整', '元正', '圓整', '元', '整', '圓', '圆', '圆整
 
 class SmartCleaner:
 
-    # ==========================================================
-    # 正則表達式
-    # ==========================================================
     PATTERNS = {
         'email':     re.compile(r'^[\w\.\-\+]+@[\w\.\-]+\.\w+$'),
         'mobile_tw': re.compile(r'^09\d{8}$'),
         'phone_tw':  re.compile(r'^0\d{1,2}\-?\d{6,8}$'),
         'id_tw':     re.compile(r'^[A-Z][12]\d{8}$'),
         'tax_id_tw': re.compile(r'^\d{8}$'),
-        'date_str':  re.compile(r'^(\d{4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4})$'),
+        'date_str':  re.compile(r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4})$'),
         'url':       re.compile(r'^https?://'),
         'currency':  re.compile(r'^[\sNT\$,\.\(\)\d\-]+$'),
     }
@@ -74,7 +67,6 @@ class SmartCleaner:
         '#NAME?', '#NULL!', '#NUM!', 'N/A', 'NULL',
     ]
 
-    # 中文數字出現的指標字元
     CN_MONEY_INDICATORS = [
         '壹', '貳', '參', '叁', '肆', '伍', '陸', '柒', '捌', '玖',
         '拾', '佰', '仟', '萬', '億', '元整',
@@ -85,14 +77,12 @@ class SmartCleaner:
     # ==========================================================
     @staticmethod
     def parse_chinese_number(text):
-        """把中文數字轉成阿拉伯數字，失敗回傳 None"""
         if text is None:
             return None
         s = str(text).strip()
         if s == '':
             return None
 
-        # 去掉尾綴
         for suf in CN_SUFFIXES:
             if s.endswith(suf):
                 s = s[:-len(suf)].strip()
@@ -101,13 +91,11 @@ class SmartCleaner:
         if s == '':
             return None
 
-        # 如果本身就是阿拉伯數字
         try:
             return float(s)
         except ValueError:
             pass
 
-        # 逐字解析
         total = 0
         section = 0
         current = 0
@@ -121,19 +109,16 @@ class SmartCleaner:
                 unit = CN_UNIT[ch]
                 has_any = True
                 if unit >= 10000:
-                    # 萬、億
                     section = (section + current) * unit
                     total += section
                     section = 0
                     current = 0
                 else:
-                    # 拾、佰、仟
                     if current == 0:
                         current = 1
                     section += current * unit
                     current = 0
             else:
-                # 無法辨識的字元 → 放棄
                 return None
 
         if not has_any:
@@ -146,15 +131,14 @@ class SmartCleaner:
     # ==========================================================
     @staticmethod
     def to_halfwidth(value):
-        """全形字元轉半形（含全形空白、數字、英文、標點）"""
         if pd.isna(value):
             return value
         result = []
         for ch in str(value):
             code = ord(ch)
-            if code == 0x3000:               # 全形空白
+            if code == 0x3000:
                 result.append(' ')
-            elif 0xFF01 <= code <= 0xFF5E:   # 全形 ASCII 範圍
+            elif 0xFF01 <= code <= 0xFF5E:
                 result.append(chr(code - 0xFEE0))
             else:
                 result.append(ch)
@@ -165,7 +149,6 @@ class SmartCleaner:
     # ==========================================================
     @staticmethod
     def flatten_newlines(value):
-        """把儲存格內的換行符號換成空格"""
         if pd.isna(value):
             return value
         s = str(value)
@@ -227,7 +210,7 @@ class SmartCleaner:
         if len(s_str) == 0:
             return 'empty'
 
-        # ---------- 中文數字金額 ----------
+        # 中文數字金額
         try:
             cn_count = s_str.apply(
                 lambda x: any(ind in x for ind in cls.CN_MONEY_INDICATORS)
@@ -237,7 +220,7 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # ---------- 貨幣 / 數字混雜 ----------
+        # 貨幣 / 數字混雜
         try:
             currency_like = s_str.str.match(r'^[\sNT\$,\.\(\)\d\-]+$').sum()
             if len(s_str) > 0 and currency_like / len(s_str) >= 0.4:
@@ -247,7 +230,7 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # ---------- 一般 pattern ----------
+        # 一般 pattern
         try:
             scores = {name: cls._match_ratio(series, pat)
                       for name, pat in cls.PATTERNS.items()}
@@ -257,14 +240,14 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # ---------- 純數值 ----------
+        # 純數值
         try:
             pd.to_numeric(s)
             return 'number'
         except (ValueError, TypeError):
             pass
 
-        # ---------- 日期 ----------
+        # 日期（pandas 解析）
         try:
             parsed = pd.to_datetime(s, errors='coerce')
             if len(s) > 0 and parsed.notna().sum() >= len(s) * 0.4:
@@ -272,10 +255,10 @@ class SmartCleaner:
         except (ValueError, TypeError):
             pass
 
-        # ---------- 日期格式字串 ----------
+        # 日期格式字串（含民國年、中文日期）
         try:
             date_like = s_str.str.match(
-                r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}日?$'
+                r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?)$'
             ).sum()
             if len(s_str) > 0 and date_like / len(s_str) >= 0.4:
                 return 'date_str'
@@ -335,23 +318,27 @@ class SmartCleaner:
         if s == '' or s.lower() == 'nan':
             return np.nan
 
+        # 民國115年5月25日
         m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             return SmartCleaner._validate_date(y + 1911, mo, d)
 
+        # 115年5月25日
         m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
+        # 115/5/20 或 115-5-20（三位數年視為民國）
         m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
+        # 四位西元年
         m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -360,7 +347,7 @@ class SmartCleaner:
         return value
 
     # ==========================================================
-    # 貨幣清理（含中文數字）
+    # 貨幣清理
     # ==========================================================
     @classmethod
     def _clean_currency_value(cls, value):
@@ -370,13 +357,11 @@ class SmartCleaner:
         if s == '' or s.lower() == 'nan':
             return np.nan
 
-        # 1. 中文大寫數字
         if any(ind in s for ind in cls.CN_MONEY_INDICATORS):
             parsed = cls.parse_chinese_number(s)
             if parsed is not None:
                 return parsed
 
-        # 2. 會計負數 (8)
         m = re.match(r'^\(([\d,\.]+)\)$', s)
         if m:
             try:
@@ -384,7 +369,6 @@ class SmartCleaner:
             except ValueError:
                 return value
 
-        # 3. 一般數字（移除貨幣符號、千分位、空格）
         cleaned = s
         for token in ['NT$', 'NT', 'nt$', 'nt', '$', ',', ' ', '元', '　']:
             cleaned = cleaned.replace(token, '')
@@ -405,7 +389,7 @@ class SmartCleaner:
         df_clean = df.copy().reset_index(drop=True)
         actions = []
 
-        # ---------- 1. 移除非資料行 ----------
+        # 1. 非資料行
         if options.get('remove_non_data_rows', True):
             try:
                 mask = df_clean.apply(cls._is_non_data_row, axis=1)
@@ -416,7 +400,7 @@ class SmartCleaner:
             except Exception as e:
                 actions.append(f"⚠️ 非資料行偵測失敗：{e}")
 
-        # ---------- 2. Excel 錯誤值 ----------
+        # 2. Excel 錯誤值
         if options.get('clean_excel_errors', True):
             total_fixed = 0
             try:
@@ -431,7 +415,7 @@ class SmartCleaner:
             if total_fixed > 0:
                 actions.append(f"✅ 清理 {total_fixed} 個 Excel 錯誤值（#VALUE! 等）")
 
-        # ---------- 3. 全形 → 半形 ----------
+        # 3. 全形 → 半形
         if options.get('normalize_width', True):
             cells_changed = 0
             try:
@@ -447,7 +431,7 @@ class SmartCleaner:
             if cells_changed > 0:
                 actions.append(f"✅ 轉換 {cells_changed} 個儲存格的全形字元為半形")
 
-        # ---------- 4. 儲存格內換行 → 空格 ----------
+        # 4. 儲存格換行
         if options.get('flatten_newlines', True):
             cells_changed = 0
             try:
@@ -463,7 +447,7 @@ class SmartCleaner:
             if cells_changed > 0:
                 actions.append(f"✅ 處理 {cells_changed} 個儲存格內的換行符號")
 
-        # ---------- 5. 去重 ----------
+        # 5. 去重
         if options.get('drop_duplicates', True):
             try:
                 before = len(df_clean)
@@ -474,7 +458,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # ---------- 6. 欄位名稱清理 ----------
+        # 6. 欄位名稱
         if options.get('clean_columns', True):
             try:
                 new_cols = [str(c).strip() for c in df_clean.columns]
@@ -484,7 +468,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # ---------- 7. 文字 trim ----------
+        # 7. 文字 trim
         if options.get('trim_strings', True):
             touched = 0
             try:
@@ -500,7 +484,7 @@ class SmartCleaner:
             if touched:
                 actions.append(f"✅ 清理 {touched} 個文字欄位的頭尾空白")
 
-        # ---------- 8. 民國年 / 日期標準化 ----------
+        # 8. 民國年 / 日期標準化
         if options.get('normalize_date', True):
             date_fixed = 0
             invalid_dates = 0
@@ -561,7 +545,7 @@ class SmartCleaner:
             if invalid_dates > 0:
                 actions.append(f"⚠️ 偵測到 {invalid_dates} 個無效日期，已標記")
 
-        # ---------- 9. 貨幣清理（含中文數字） ----------
+        # 9. 貨幣清理
         if options.get('clean_currency', True):
             currency_fixed = 0
             try:
@@ -587,7 +571,7 @@ class SmartCleaner:
             if currency_fixed > 0:
                 actions.append(f"✅ 清理 {currency_fixed} 個貨幣 / 中文數字")
 
-        # ---------- 10. 電話標準化 ----------
+        # 10. 電話標準化
         if options.get('normalize_phone', True):
             try:
                 for col in df_clean.columns:
@@ -602,7 +586,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # ---------- 11. Email 小寫 ----------
+        # 11. Email 小寫
         if options.get('normalize_email', True):
             try:
                 for col in df_clean.columns:
@@ -616,7 +600,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # ---------- 12. 填補空白 ----------
+        # 12. 填補空白
         if options.get('fill_na'):
             fill_value = options.get('fill_value', '')
             df_clean = df_clean.fillna(fill_value)
@@ -637,7 +621,6 @@ class SmartCleaner:
             except Exception:
                 continue
 
-            # 離群值
             if ctype == 'number':
                 try:
                     s = pd.to_numeric(df[col], errors='coerce').dropna()
@@ -657,7 +640,6 @@ class SmartCleaner:
                 except Exception:
                     pass
 
-            # 格式混用（手機 + 市話）
             if ctype in ('phone_tw', 'mobile_tw'):
                 try:
                     s = df[col].dropna().astype(str)
@@ -673,7 +655,6 @@ class SmartCleaner:
                 except Exception:
                     pass
 
-            # 負數數量
             col_lower = str(col).lower()
             if any(kw in col_lower for kw in ['數量', 'qty', 'quantity', '個數']):
                 try:
@@ -689,7 +670,6 @@ class SmartCleaner:
                 except Exception:
                     pass
 
-            # 金額欄位出現純文字
             if any(kw in col_lower for kw in ['價格', '單價', '金額', '數量']):
                 try:
                     s = df[col].dropna().astype(str)
@@ -704,7 +684,6 @@ class SmartCleaner:
                 except Exception:
                     pass
 
-            # 無效日期標記
             try:
                 s = df[col].dropna().astype(str)
                 invalid = s[s.str.contains('無效日期', na=False)]
@@ -718,7 +697,6 @@ class SmartCleaner:
             except Exception:
                 pass
 
-            # Emoji / 特殊符號
             try:
                 s = df[col].dropna().astype(str)
                 emoji_like = s[s.str.contains(
