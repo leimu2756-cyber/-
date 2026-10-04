@@ -357,11 +357,12 @@ elif st.session_state['user_role'] == 'client':
                 def read_csv_robust(file, encoding):
                     """
                     穩健的 CSV 讀取：
-                    1. 用 Python 內建 csv 模組逐行讀取
-                    2. 找出最大欄位數
-                    3. 把每一行補齊到最大欄位數
+                    1. 逐行讀取
+                    2. 用「眾數」當作目標欄位數
+                    3. 每行截斷或補齊到目標欄位數
                     """
                     import csv as csv_module
+                    from collections import Counter
                     try:
                         file.seek(0)
                         raw = file.read()
@@ -369,7 +370,6 @@ elif st.session_state['user_role'] == 'client':
                             text = raw.decode(encoding, errors='replace')
                         else:
                             text = raw
-                        # 去掉 BOM
                         if text.startswith('\ufeff'):
                             text = text[1:]
                         lines = text.splitlines()
@@ -381,20 +381,30 @@ elif st.session_state['user_role'] == 'client':
                     if not rows:
                         return pd.DataFrame()
 
-                    max_cols = max(len(r) for r in rows)
-                    padded = [r + [''] * (max_cols - len(r)) for r in rows]
-                    return pd.DataFrame(padded)
+                    # 用眾數當基準
+                    col_counts = Counter(len(r) for r in rows)
+                    most_common_cols = col_counts.most_common(1)[0][0]
+                    if most_common_cols < 2:
+                        most_common_cols = max(len(r) for r in rows)
+
+                    # 每行截斷或補齊
+                    normalized = []
+                    for r in rows:
+                        if len(r) < most_common_cols:
+                            r = r + [''] * (most_common_cols - len(r))
+                        elif len(r) > most_common_cols:
+                            r = r[:most_common_cols]
+                        normalized.append(r)
+
+                    return pd.DataFrame(normalized)
 
                 def read_raw(file):
                     file.seek(0)
                     if file.name.lower().endswith('.csv'):
-                        # 先試 utf-8-sig
                         df = read_csv_robust(file, 'utf-8-sig')
                         if df is None or df.empty:
-                            # 再試 big5
                             df = read_csv_robust(file, 'big5')
                         if df is None:
-                            # 最後用 pandas 預設（會跳過壞行）
                             file.seek(0)
                             try:
                                 df = pd.read_csv(
