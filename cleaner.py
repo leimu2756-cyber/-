@@ -1,7 +1,10 @@
 """
-智慧資料清理引擎 (Smart Data Cleaner) v9
+智慧資料清理引擎 (Smart Data Cleaner) v10
 新增：
-  - 支援「只有月/日」的日期格式（1/5 → 2026-01-05）
+  - 總計自動重算與異常警示
+  - 總計列分離（keep / remove / separate）
+  - 清理報告結構化
+  - 行業模板自動識別
 """
 
 import re
@@ -11,18 +14,15 @@ from datetime import datetime
 
 
 CN_NUM = {
-    '零': 0, '〇': 0,
-    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+    '零': 0, '〇': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
     '六': 6, '七': 7, '八': 8, '九': 9,
     '壹': 1, '貳': 2, '參': 3, '叁': 3, '肆': 4, '伍': 5,
     '陸': 6, '柒': 7, '捌': 8, '玖': 9,
 }
 
 CN_UNIT = {
-    '拾': 10, '佰': 100, '仟': 1000,
-    '十': 10, '百': 100, '千': 1000,
-    '萬': 10000, '万': 10000,
-    '億': 100000000, '亿': 100000000,
+    '拾': 10, '佰': 100, '仟': 1000, '十': 10, '百': 100, '千': 1000,
+    '萬': 10000, '万': 10000, '億': 100000000, '亿': 100000000,
 }
 
 CN_SUFFIXES = ['元整', '元正', '圓整', '元', '整', '圓', '圆', '圆整']
@@ -42,23 +42,14 @@ class SmartCleaner:
     }
 
     TYPE_LABELS = {
-        'email':     '📧 Email',
-        'mobile_tw': '📱 手機號碼',
-        'phone_tw':  '☎️ 市話',
-        'id_tw':     '🆔 身分證號',
-        'tax_id_tw': '🏢 統一編號',
-        'date_str':  '📅 日期（文字）',
-        'url':       '🔗 網址',
-        'currency':  '💰 金額',
-        'number':    '🔢 數值',
-        'date':      '📅 日期',
-        'text':      '📝 文字',
-        'empty':     '⬜ 空欄位',
+        'email': '📧 Email', 'mobile_tw': '📱 手機號碼', 'phone_tw': '☎️ 市話',
+        'id_tw': '🆔 身分證號', 'tax_id_tw': '🏢 統一編號', 'date_str': '📅 日期（文字）',
+        'url': '🔗 網址', 'currency': '💰 金額', 'number': '🔢 數值',
+        'date': '📅 日期', 'text': '📝 文字', 'empty': '⬜ 空欄位',
     }
 
     NON_DATA_KEYWORDS = [
-        '###', '===', '---',
-        '系統警告', '報表結束', '資料嚴重損毀',
+        '###', '===', '---', '系統警告', '報表結束', '資料嚴重損毀',
         '公司名稱', '備註：', '備註:',
     ]
 
@@ -76,6 +67,30 @@ class SmartCleaner:
         '總計', '小計', '合計', '總和', '總結',
         'Total', 'Subtotal', 'Sum', 'Grand Total',
     ]
+
+    # 行業模板：欄位關鍵字 → 模板名稱
+    TEMPLATES = {
+        '記帳本': {
+            'keywords': ['日期', '項目', '分類', '金額', '付款方式', '備註'],
+            'required': ['日期', '金額'],
+        },
+        '成績單': {
+            'keywords': ['座號', '姓名', '國文', '英文', '數學', '平均'],
+            'required': ['姓名'],
+        },
+        '銷售報表': {
+            'keywords': ['客戶', '產品', '訂購數量', '單價', '訂單日期', '總金額'],
+            'required': ['客戶', '產品'],
+        },
+        '庫存表': {
+            'keywords': ['商品', '品號', '庫存', '進貨', '出貨', '剩餘'],
+            'required': ['商品'],
+        },
+        '員工名單': {
+            'keywords': ['員工編號', '姓名', '部門', '職稱', '到職日', '薪資'],
+            'required': ['姓名'],
+        },
+    }
 
     # ==========================================================
     # 中文數字解析
@@ -193,6 +208,9 @@ class SmartCleaner:
 
         return False
 
+    # ==========================================================
+    # 彙總列偵測
+    # ==========================================================
     @classmethod
     def _is_summary_row(cls, row):
         try:
@@ -209,6 +227,107 @@ class SmartCleaner:
                     return True
         return False
 
+    # ==========================================================
+    # 行業模板偵測
+    # ==========================================================
+    @classmethod
+    def detect_template(cls, df):
+        """偵測欄位符合哪個行業模板"""
+        try:
+            cols = [str(c).strip() for c in df.columns]
+        except Exception:
+            return {'template': None, 'confidence': 0.0, 'matched': []}
+
+        best = {'template': None, 'confidence': 0.0, 'matched': []}
+
+        for name, spec in cls.TEMPLATES.items():
+            matched = []
+            for kw in spec['keywords']:
+                for col in cols:
+                    if kw in col:
+                        matched.append(kw)
+                        break
+
+            # 檢查必要欄位
+            has_required = all(
+                any(req in col for col in cols)
+                for req in spec['required']
+            )
+            if not has_required:
+                continue
+
+            confidence = len(matched) / max(len(spec['keywords']), 1)
+            if confidence > best['confidence']:
+                best = {
+                    'template': name,
+                    'confidence': round(confidence, 2),
+                    'matched': matched,
+                }
+
+        return best
+
+    # ==========================================================
+    # 總計重算與驗證
+    # ==========================================================
+    @classmethod
+    def validate_totals(cls, df, summary_indices):
+        """
+        比對總計列的值 vs 明細加總
+        回傳：list of {column, summary_value, calculated_value, difference, is_consistent}
+        """
+        if not summary_indices:
+            return []
+
+        results = []
+        detail_df = df.drop(index=summary_indices, errors='ignore')
+
+        for col in df.columns:
+            # 找出總計列在這一欄的值
+            summary_vals = []
+            for idx in summary_indices:
+                try:
+                    v = df.at[idx, col]
+                except Exception:
+                    continue
+                if pd.isna(v):
+                    continue
+                # 嘗試轉成數字
+                try:
+                    s = str(v).strip()
+                    for token in ['NT$', 'NT', '$', ',', ' ', '元', '　']:
+                        s = s.replace(token, '')
+                    num = float(s)
+                    summary_vals.append(num)
+                except (ValueError, TypeError):
+                    continue
+
+            if not summary_vals:
+                continue
+
+            # 計算明細加總（只算數字）
+            detail_nums = pd.to_numeric(detail_df[col], errors='coerce').dropna()
+            if len(detail_nums) == 0:
+                continue
+
+            calculated = float(detail_nums.sum())
+            summary_value = float(sum(summary_vals))
+            difference = round(summary_value - calculated, 2)
+
+            # 只有當兩者都不是 0，且差距超過 0.01 時才警告
+            if abs(difference) > 0.01:
+                results.append({
+                    'column': col,
+                    'summary_value': summary_value,
+                    'calculated_value': round(calculated, 2),
+                    'difference': difference,
+                    'is_consistent': False,
+                })
+
+        return results
+
+    # ==========================================================
+    # 欄位類型偵測
+    # ==========================================================
     @classmethod
     def detect_column_type(cls, series):
         s = series.dropna()
@@ -315,7 +434,6 @@ class SmartCleaner:
         if s == '' or s.lower() == 'nan':
             return np.nan
 
-        # 只有月/日（例如 1/5、1-5）→ 用今年年份
         m = re.match(r'^(\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             mo, d = int(m.group(1)), int(m.group(2))
@@ -323,27 +441,23 @@ class SmartCleaner:
                 current_year = datetime.now().year
                 return SmartCleaner._validate_date(current_year, mo, d)
 
-        # 民國115年5月25日
         m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 115年5月25日
         m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 115/5/20 或 115-5-20（三位數年視為民國）
         m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 四位西元年
         m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -382,11 +496,27 @@ class SmartCleaner:
         except ValueError:
             return value
 
+    # ==========================================================
+    # 主清理函式
+    # ==========================================================
     @classmethod
     def clean_dataframe(cls, df, options=None):
         options = options or {}
         df_clean = df.copy().reset_index(drop=True)
         actions = []
+        stats = {
+            'rows_removed_non_data': 0,
+            'rows_removed_summary': 0,
+            'rows_removed_duplicate': 0,
+            'excel_errors_fixed': 0,
+            'cells_halfwidth': 0,
+            'cells_newline': 0,
+            'dates_fixed': 0,
+            'currency_fixed': 0,
+            'phones_fixed': 0,
+            'emails_fixed': 0,
+            'columns_cleaned': 0,
+        }
 
         # 1. 非資料行
         if options.get('remove_non_data_rows', True):
@@ -395,6 +525,7 @@ class SmartCleaner:
                 removed = int(mask.sum())
                 if removed > 0:
                     df_clean = df_clean[~mask].reset_index(drop=True)
+                    stats['rows_removed_non_data'] = removed
                     actions.append(f"✅ 移除 {removed} 行非資料列（警告 / 標題裝飾 / 空行）")
             except Exception as e:
                 actions.append(f"⚠️ 非資料行偵測失敗：{e}")
@@ -412,6 +543,7 @@ class SmartCleaner:
             except Exception:
                 pass
             if total_fixed > 0:
+                stats['excel_errors_fixed'] = total_fixed
                 actions.append(f"✅ 清理 {total_fixed} 個 Excel 錯誤值（#VALUE! 等）")
 
         # 3. 全形 → 半形
@@ -428,6 +560,7 @@ class SmartCleaner:
             except Exception:
                 pass
             if cells_changed > 0:
+                stats['cells_halfwidth'] = cells_changed
                 actions.append(f"✅ 轉換 {cells_changed} 個儲存格的全形字元為半形")
 
         # 4. 儲存格換行
@@ -444,6 +577,7 @@ class SmartCleaner:
             except Exception:
                 pass
             if cells_changed > 0:
+                stats['cells_newline'] = cells_changed
                 actions.append(f"✅ 處理 {cells_changed} 個儲存格內的換行符號")
 
         # 5. 去重
@@ -453,18 +587,8 @@ class SmartCleaner:
                 df_clean = df_clean.drop_duplicates().reset_index(drop=True)
                 removed = before - len(df_clean)
                 if removed > 0:
+                    stats['rows_removed_duplicate'] = removed
                     actions.append(f"✅ 移除 {removed} 筆完全重複的列")
-            except Exception:
-                pass
-
-        # 5-2. 移除彙總列
-        if options.get('remove_summary_rows', False):
-            try:
-                mask = df_clean.apply(cls._is_summary_row, axis=1)
-                removed = int(mask.sum())
-                if removed > 0:
-                    df_clean = df_clean[~mask].reset_index(drop=True)
-                    actions.append(f"✅ 移除 {removed} 行彙總列（總計 / 小計 / 合計）")
             except Exception:
                 pass
 
@@ -492,6 +616,7 @@ class SmartCleaner:
             except Exception:
                 pass
             if touched:
+                stats['columns_cleaned'] = touched
                 actions.append(f"✅ 清理 {touched} 個文字欄位的頭尾空白")
 
         # 8. 民國年 / 日期標準化
@@ -517,6 +642,7 @@ class SmartCleaner:
                 pass
 
             if date_fixed > 0:
+                stats['dates_fixed'] = date_fixed
                 actions.append(f"✅ 轉換 {date_fixed} 個民國年 / 日期格式為西元")
 
         # 9. 貨幣清理
@@ -543,6 +669,7 @@ class SmartCleaner:
             except Exception:
                 pass
             if currency_fixed > 0:
+                stats['currency_fixed'] = currency_fixed
                 actions.append(f"✅ 清理 {currency_fixed} 個貨幣 / 中文數字")
 
         # 10. 電話標準化
@@ -556,6 +683,7 @@ class SmartCleaner:
                     if ctype in ('phone_tw', 'mobile_tw'):
                         df_clean[col] = (df_clean[col].astype(str)
                                          .str.replace(r'[-\s\(\)]', '', regex=True))
+                        stats['phones_fixed'] += 1
                         actions.append(f"✅ 標準化「{col}」的電話格式")
             except Exception:
                 pass
@@ -570,6 +698,7 @@ class SmartCleaner:
                         continue
                     if ctype == 'email':
                         df_clean[col] = df_clean[col].astype(str).str.lower()
+                        stats['emails_fixed'] += 1
                         actions.append(f"✅ 將「{col}」的 Email 轉為小寫")
             except Exception:
                 pass
@@ -580,8 +709,41 @@ class SmartCleaner:
             df_clean = df_clean.fillna(fill_value)
             actions.append(f"✅ 將空白值填補為「{fill_value}」")
 
-        return df_clean, actions
+        # ==========================================================
+        # 總計列處理（最後執行，因為要基於清理後的資料計算）
+        # ==========================================================
+        summary_action = options.get('summary_row_action', 'keep')
+        summary_df = None
+        total_check = []
 
+        try:
+            summary_mask = df_clean.apply(cls._is_summary_row, axis=1)
+            summary_indices = list(df_clean[summary_mask].index)
+
+            if summary_indices and summary_action != 'keep':
+                # 先驗證總計
+                total_check = cls.validate_totals(df_clean, summary_indices)
+
+                # 分離總計列
+                summary_df = df_clean.loc[summary_indices].copy()
+                df_clean = df_clean.drop(index=summary_indices).reset_index(drop=True)
+                stats['rows_removed_summary'] = len(summary_indices)
+
+                if summary_action == 'remove':
+                    actions.append(f"✅ 移除 {len(summary_indices)} 行彙總列")
+                elif summary_action == 'separate':
+                    actions.append(f"✅ 分離 {len(summary_indices)} 行彙總列（另存為「總計」工作表）")
+            elif summary_indices:
+                # keep：只驗證，不移除
+                total_check = cls.validate_totals(df_clean, summary_indices)
+        except Exception:
+            pass
+
+        return df_clean, actions, stats, summary_df, total_check
+
+    # ==========================================================
+    # 異常偵測
+    # ==========================================================
     @classmethod
     def detect_anomalies(cls, df):
         anomalies = []
@@ -603,8 +765,7 @@ class SmartCleaner:
                             outliers = s[(s < lo) | (s > hi)]
                             if len(outliers) > 0:
                                 anomalies.append({
-                                    '欄位': col,
-                                    '類型': '數值離群值',
+                                    '欄位': col, '類型': '數值離群值',
                                     '數量': len(outliers),
                                     '說明': f'超出 [{lo:.2f}, {hi:.2f}] 範圍',
                                 })
@@ -618,8 +779,7 @@ class SmartCleaner:
                     has_landline = s.str.match(r'^0\d{1,2}\-?\d{6,8}$').any()
                     if has_mobile and has_landline:
                         anomalies.append({
-                            '欄位': col,
-                            '類型': '格式混用',
+                            '欄位': col, '類型': '格式混用',
                             '數量': len(s),
                             '說明': '同一欄位包含手機與市話格式',
                         })
@@ -633,8 +793,7 @@ class SmartCleaner:
                     negatives = s[s < 0]
                     if len(negatives) > 0:
                         anomalies.append({
-                            '欄位': col,
-                            '類型': '負數數量',
+                            '欄位': col, '類型': '負數數量',
                             '數量': len(negatives),
                             '說明': '數量欄位出現負值，可能是輸入錯誤',
                         })
@@ -647,8 +806,7 @@ class SmartCleaner:
                     weird = s[s.str.match(r'^[a-zA-Z\u4e00-\u9fa5]{1,10}$')]
                     if len(weird) > 0:
                         anomalies.append({
-                            '欄位': col,
-                            '類型': '非數值內容',
+                            '欄位': col, '類型': '非數值內容',
                             '數量': len(weird),
                             '說明': '金額 / 數量欄位出現文字',
                         })
@@ -660,8 +818,7 @@ class SmartCleaner:
                 invalid = s[s.str.contains('無效日期', na=False)]
                 if len(invalid) > 0:
                     anomalies.append({
-                        '欄位': col,
-                        '類型': '無效日期',
+                        '欄位': col, '類型': '無效日期',
                         '數量': len(invalid),
                         '說明': '日期欄位存在不存在的日期（如 2 月 30 日）',
                     })
@@ -675,8 +832,7 @@ class SmartCleaner:
                 )]
                 if len(emoji_like) > 0:
                     anomalies.append({
-                        '欄位': col,
-                        '類型': '含表情符號',
+                        '欄位': col, '類型': '含表情符號',
                         '數量': len(emoji_like),
                         '說明': '欄位中含 emoji 或特殊符號，請確認是否為誤輸入',
                     })
@@ -688,8 +844,7 @@ class SmartCleaner:
             summary_count = int(summary_mask.sum())
             if summary_count > 0:
                 anomalies.append({
-                    '欄位': '（整列）',
-                    '類型': '彙總列',
+                    '欄位': '（整列）', '類型': '彙總列',
                     '數量': summary_count,
                     '說明': '偵測到「總計 / 小計 / 合計」等彙總列，建議確認是否要保留',
                 })
