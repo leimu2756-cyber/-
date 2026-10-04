@@ -253,9 +253,6 @@ elif st.session_state['user_role'] == 'client':
     except Exception:
         db_amount, db_last5, db_status = '', '', '未審核'
 
-    # --------------------------------------------------------
-    # 4-A. 意見反饋
-    # --------------------------------------------------------
     if client_page == "💬 意見反饋":
         st.title("💬 意見反饋與客製化需求")
         st.markdown(f"""
@@ -293,9 +290,6 @@ elif st.session_state['user_role'] == 'client':
         st.divider()
         st.caption("💡 已送出過的反饋，可從管理員後台查看處理狀態。")
 
-    # --------------------------------------------------------
-    # 4-B. 資料清理工作台
-    # --------------------------------------------------------
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
@@ -360,14 +354,60 @@ elif st.session_state['user_role'] == 'client':
                         skip_n = 0
                         header_n = 0
 
+                def read_csv_robust(file, encoding):
+                    """
+                    穩健的 CSV 讀取：
+                    1. 用 Python 內建 csv 模組逐行讀取
+                    2. 找出最大欄位數
+                    3. 把每一行補齊到最大欄位數
+                    """
+                    import csv as csv_module
+                    try:
+                        file.seek(0)
+                        raw = file.read()
+                        if isinstance(raw, bytes):
+                            text = raw.decode(encoding, errors='replace')
+                        else:
+                            text = raw
+                        # 去掉 BOM
+                        if text.startswith('\ufeff'):
+                            text = text[1:]
+                        lines = text.splitlines()
+                        reader = csv_module.reader(lines)
+                        rows = [r for r in reader]
+                    except Exception:
+                        return None
+
+                    if not rows:
+                        return pd.DataFrame()
+
+                    max_cols = max(len(r) for r in rows)
+                    padded = [r + [''] * (max_cols - len(r)) for r in rows]
+                    return pd.DataFrame(padded)
+
                 def read_raw(file):
                     file.seek(0)
                     if file.name.lower().endswith('.csv'):
-                        try:
-                            return pd.read_csv(file, encoding='utf-8-sig', header=None)
-                        except UnicodeDecodeError:
+                        # 先試 utf-8-sig
+                        df = read_csv_robust(file, 'utf-8-sig')
+                        if df is None or df.empty:
+                            # 再試 big5
+                            df = read_csv_robust(file, 'big5')
+                        if df is None:
+                            # 最後用 pandas 預設（會跳過壞行）
                             file.seek(0)
-                            return pd.read_csv(file, encoding='big5', header=None)
+                            try:
+                                df = pd.read_csv(
+                                    file, encoding='utf-8-sig', header=None,
+                                    on_bad_lines='skip', engine='python'
+                                )
+                            except Exception:
+                                file.seek(0)
+                                df = pd.read_csv(
+                                    file, encoding='big5', header=None,
+                                    on_bad_lines='skip', engine='python'
+                                )
+                        return df
                     else:
                         return pd.read_excel(file, header=None)
 
@@ -484,7 +524,6 @@ elif st.session_state['user_role'] == 'client':
 
                 st.caption(f"📊 讀取結果：{len(df)} 列 × {len(df.columns)} 欄")
 
-                # ---------- 檢查公式欄位 ----------
                 formula_warning = False
                 try:
                     empty_cols = [col for col in df.columns if df[col].isna().all()]
@@ -586,7 +625,6 @@ elif st.session_state['user_role'] == 'client':
                 with st.expander("⚙️ 進階選項", expanded=False):
                     st.caption("想手動調整再打開。")
 
-                    # 彙總列偵測提示
                     try:
                         summary_mask = df.apply(SmartCleaner._is_summary_row, axis=1)
                         summary_count = int(summary_mask.sum())
