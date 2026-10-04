@@ -9,9 +9,6 @@ from db import get_engine, get_session, init_db, fetch_one, fetch_all, execute
 from sqlalchemy import text
 
 
-# ============================================================
-# 0. 設定
-# ============================================================
 MASTER_PASSWORD = '2012011220120629LryCsy'
 ADMIN_EMAIL = '717804lin@gmail.com'
 
@@ -41,9 +38,6 @@ for key, default in [('logged_in', False), ('user_role', None), ('username', Non
         st.session_state[key] = default
 
 
-# ============================================================
-# 1. 側邊欄
-# ============================================================
 st.sidebar.title("🧹 AI 資料清理工作台")
 client_page = None
 
@@ -58,16 +52,12 @@ if not st.session_state['logged_in']:
                 st.sidebar.warning("請輸入帳號與密碼")
             else:
                 try:
-                    row = fetch_one(
-                        "SELECT password FROM users WHERE username = :u", {"u": u}
-                    )
+                    row = fetch_one("SELECT password FROM users WHERE username = :u", {"u": u})
                 except Exception as e:
                     st.sidebar.error(f"資料庫連線失敗：{e}")
                     row = None
                 if row and bcrypt.checkpw(p.encode('utf-8'), row[0].encode('utf-8')):
-                    st.session_state.update(
-                        logged_in=True, user_role='client', username=u
-                    )
+                    st.session_state.update(logged_in=True, user_role='client', username=u)
                     st.rerun()
                 else:
                     st.sidebar.error("帳號或密碼錯誤")
@@ -81,9 +71,7 @@ if not st.session_state['logged_in']:
                 st.sidebar.warning("請填寫所有欄位")
             else:
                 try:
-                    existing = fetch_one(
-                        "SELECT username FROM users WHERE username = :u", {"u": u}
-                    )
+                    existing = fetch_one("SELECT username FROM users WHERE username = :u", {"u": u})
                 except Exception as e:
                     st.sidebar.error(f"資料庫連線失敗：{e}")
                     existing = None
@@ -93,8 +81,7 @@ if not st.session_state['logged_in']:
                     hashed = bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt())
                     try:
                         execute(
-                            "INSERT INTO users (username, password, contact) "
-                            "VALUES (:u, :p, :c)",
+                            "INSERT INTO users (username, password, contact) VALUES (:u, :p, :c)",
                             {"u": u, "p": hashed.decode('utf-8'), "c": contact},
                         )
                         st.sidebar.success("註冊成功！請登入並回報匯款資訊。")
@@ -105,30 +92,21 @@ if not st.session_state['logged_in']:
         mp = st.sidebar.text_input("管理員密碼", type="password")
         if st.sidebar.button("進入後台"):
             if mp == MASTER_PASSWORD:
-                st.session_state.update(
-                    logged_in=True, user_role='admin', username='MasterAdmin'
-                )
+                st.session_state.update(logged_in=True, user_role='admin', username='MasterAdmin')
                 st.rerun()
             else:
                 st.sidebar.error("密碼錯誤")
 
 else:
     st.sidebar.success(f"已登入：{st.session_state['username']}")
-    st.sidebar.caption(
-        f"角色：{'管理員' if st.session_state['user_role'] == 'admin' else '客戶'}"
-    )
+    st.sidebar.caption(f"角色：{'管理員' if st.session_state['user_role'] == 'admin' else '客戶'}")
     if st.session_state['user_role'] == 'client':
-        client_page = st.sidebar.radio(
-            "功能選單", ["🧹 資料清理工作台", "💬 意見反饋"]
-        )
+        client_page = st.sidebar.radio("功能選單", ["🧹 資料清理工作台", "💬 意見反饋"])
     if st.sidebar.button("登出"):
         st.session_state.update(logged_in=False, user_role=None, username=None)
         st.rerun()
 
 
-# ============================================================
-# 2. 未登入首頁
-# ============================================================
 if not st.session_state['logged_in']:
     st.title("🧹 AI 資料清理工作台")
     st.info("👈 請從左側選單登入、註冊，或以管理員密碼進入後台。")
@@ -139,9 +117,9 @@ if not st.session_state['logged_in']:
     st.markdown(f"""
 ### 💡 核心功能
 1. **AI 欄位識別** — 自動判斷 Email、手機、身分證、日期、金額等格式
-2. **資料品質報告** — 缺失值、重複率、格式一致性完整分析
-3. **一鍵清理管線** — 去重、補空白、電話 / 日期 / Email 標準化
-4. **異常值偵測** — IQR 法找出數值離群值、格式混用警告
+2. **總計自動重算** — 比對明細加總 vs 原始總計，發現差異立即警示
+3. **行業模板識別** — 自動認得記帳本、成績單、銷售報表等常見格式
+4. **一鍵清理管線** — 去重、補空白、電話 / 日期 / Email 標準化
 5. **隱私保護** — 資料僅在記憶體處理，密碼 bcrypt 雜湊儲存
 
 ### 📮 需要客製化服務？
@@ -149,9 +127,6 @@ if not st.session_state['logged_in']:
 """)
 
 
-# ============================================================
-# 3. 管理員後台
-# ============================================================
 elif st.session_state['user_role'] == 'admin':
     st.title("🛠️ 管理員控制後台")
     tab1, tab2, tab3 = st.tabs(["👥 客戶管理", "📊 使用紀錄", "💬 客戶反饋"])
@@ -239,9 +214,6 @@ elif st.session_state['user_role'] == 'admin':
                     st.divider()
 
 
-# ============================================================
-# 4. 客戶端
-# ============================================================
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
     try:
@@ -355,12 +327,6 @@ elif st.session_state['user_role'] == 'client':
                         header_n = 0
 
                 def read_csv_robust(file, encoding):
-                    """
-                    穩健的 CSV 讀取：
-                    1. 逐行讀取
-                    2. 用「眾數」當作目標欄位數
-                    3. 每行截斷或補齊到目標欄位數
-                    """
                     import csv as csv_module
                     from collections import Counter
                     try:
@@ -381,13 +347,11 @@ elif st.session_state['user_role'] == 'client':
                     if not rows:
                         return pd.DataFrame()
 
-                    # 用眾數當基準
                     col_counts = Counter(len(r) for r in rows)
                     most_common_cols = col_counts.most_common(1)[0][0]
                     if most_common_cols < 2:
                         most_common_cols = max(len(r) for r in rows)
 
-                    # 每行截斷或補齊
                     normalized = []
                     for r in rows:
                         if len(r) < most_common_cols:
@@ -524,15 +488,20 @@ elif st.session_state['user_role'] == 'client':
                 with st.spinner("正在讀取檔案…"):
                     try:
                         df_raw = read_raw(uploaded_file)
-                        df = build_dataframe(
-                            df_raw, skip_n, header_n,
-                            auto_mode=(not manual_mode),
-                        )
+                        df = build_dataframe(df_raw, skip_n, header_n, auto_mode=(not manual_mode))
                     except Exception as e:
                         st.error(f"讀取檔案失敗：{e}")
                         st.stop()
 
                 st.caption(f"📊 讀取結果：{len(df)} 列 × {len(df.columns)} 欄")
+
+                # 模板偵測
+                template_info = SmartCleaner.detect_template(df)
+                if template_info['template']:
+                    st.info(
+                        f"🎯 **偵測到行業模板：{template_info['template']}** "
+                        f"（信心度 {int(template_info['confidence'] * 100)}%）"
+                    )
 
                 formula_warning = False
                 try:
@@ -545,8 +514,7 @@ elif st.session_state['user_role'] == 'client':
                 if formula_warning:
                     st.warning(
                         "⚠️ **偵測到空白欄位**：可能是 Excel 公式未計算，"
-                        "pandas 無法讀取公式結果。建議先在 Excel 打開檔案並存檔一次，"
-                        "再上傳。"
+                        "pandas 無法讀取公式結果。建議先在 Excel 打開檔案並存檔一次，再上傳。"
                     )
 
                 with st.spinner("AI 正在分析並自動清理…"):
@@ -559,7 +527,7 @@ elif st.session_state['user_role'] == 'client':
                             'remove_non_data_rows': True,
                             'clean_excel_errors': True,
                             'drop_duplicates': True,
-                            'remove_summary_rows': False,
+                            'summary_row_action': 'keep',
                             'clean_columns': True,
                             'trim_strings': True,
                             'normalize_phone': True,
@@ -567,11 +535,23 @@ elif st.session_state['user_role'] == 'client':
                             'normalize_email': True,
                             'clean_currency': True,
                         }
-                        df_clean, actions = SmartCleaner.clean_dataframe(df, default_options)
+                        df_clean, actions, stats, summary_df, total_check = SmartCleaner.clean_dataframe(df, default_options)
                         new_quality = SmartCleaner.quality_score(df_clean)
                     except Exception as e:
                         st.error(f"清理失敗：{e}")
                         st.stop()
+
+                # ========================================================
+                # 總計驗證警示（放在最上方）
+                # ========================================================
+                if total_check:
+                    st.error("🚨 **總計不一致！請確認原始檔案**")
+                    for item in total_check:
+                        st.markdown(
+                            f"- **{item['column']}** 欄：明細加總為 `{item['calculated_value']:,}`，"
+                            f"原始總計為 `{item['summary_value']:,}`，"
+                            f"差額 `{item['difference']:+,}`"
+                        )
 
                 st.markdown("---")
                 st.markdown("## ✅ 清理完成！點下方按鈕下載")
@@ -593,6 +573,8 @@ elif st.session_state['user_role'] == 'client':
                 excel_buffer = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                     df_clean.to_excel(writer, index=False, sheet_name='清理後')
+                    if summary_df is not None and len(summary_df) > 0:
+                        summary_df.to_excel(writer, index=False, sheet_name='總計')
                 excel_bytes = excel_buffer.getvalue()
                 with col_b:
                     st.download_button(
@@ -611,18 +593,32 @@ elif st.session_state['user_role'] == 'client':
                 c3.metric("品質分數", f"{new_quality} / 100",
                           delta=f"+{round(new_quality - quality, 1)}" if new_quality > quality else "0")
 
+                # ========================================================
+                # 清理報告
+                # ========================================================
+                with st.expander("📊 清理報告（詳細統計）", expanded=True):
+                    report_rows = [
+                        ("移除非資料列", stats['rows_removed_non_data'], "列"),
+                        ("移除重複列", stats['rows_removed_duplicate'], "列"),
+                        ("移除彙總列", stats['rows_removed_summary'], "列"),
+                        ("清理 Excel 錯誤值", stats['excel_errors_fixed'], "個"),
+                        ("全形轉半形", stats['cells_halfwidth'], "格"),
+                        ("處理換行符號", stats['cells_newline'], "格"),
+                        ("日期格式轉換", stats['dates_fixed'], "筆"),
+                        ("貨幣 / 中文數字清理", stats['currency_fixed'], "筆"),
+                    ]
+                    report_df = pd.DataFrame(report_rows, columns=["項目", "數量", "單位"])
+                    report_df = report_df[report_df["數量"] > 0]
+                    if len(report_df) > 0:
+                        st.dataframe(report_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("沒有需要處理的地方。")
+
                 with st.expander("🔍 查看清理前後對比", expanded=False):
                     st.markdown("**清理前（前 5 列）**")
                     st.dataframe(df.head(5), use_container_width=True)
                     st.markdown("**清理後（前 5 列）**")
                     st.dataframe(df_clean.head(5), use_container_width=True)
-
-                with st.expander("📋 系統做了哪些處理？", expanded=True):
-                    if actions:
-                        for a in actions:
-                            st.write(a)
-                    else:
-                        st.write("（資料本來就很乾淨，沒有需要處理的地方）")
 
                 with st.expander("🤖 AI 欄位識別報告", expanded=False):
                     st.dataframe(report.drop(columns=['_raw_type']), use_container_width=True)
@@ -632,6 +628,9 @@ elif st.session_state['user_role'] == 'client':
                     else:
                         st.success("沒有偵測到明顯異常。")
 
+                # ========================================================
+                # 進階選項
+                # ========================================================
                 with st.expander("⚙️ 進階選項", expanded=False):
                     st.caption("想手動調整再打開。")
 
@@ -644,11 +643,18 @@ elif st.session_state['user_role'] == 'client':
                     if summary_count > 0:
                         st.info(f"💡 偵測到 {summary_count} 行彙總列（總計 / 小計 / 合計）")
 
-                    opt_remove_summary = st.checkbox(
-                        "移除彙總列（總計 / 小計 / 合計）",
-                        value=False,
-                        help="如果你的報表有「總計」列，且你只想要明細資料，請勾選此項。",
+                    summary_action = st.radio(
+                        "彙總列處理方式",
+                        ["保留在資料中", "完全移除", "分離到另一張表"],
+                        index=0,
+                        help="建議選「分離到另一張表」，避免樞紐分析時被重複計算。",
                     )
+                    summary_action_map = {
+                        "保留在資料中": "keep",
+                        "完全移除": "remove",
+                        "分離到另一張表": "separate",
+                    }
+
                     opt_dup = st.checkbox("移除完全重複的列", value=True)
                     opt_col = st.checkbox("清理欄位名稱的頭尾空白", value=True)
                     opt_trim = st.checkbox("清理文字欄位的頭尾空白", value=True)
@@ -663,7 +669,7 @@ elif st.session_state['user_role'] == 'client':
                             'remove_non_data_rows': True,
                             'clean_excel_errors': True,
                             'drop_duplicates': opt_dup,
-                            'remove_summary_rows': opt_remove_summary,
+                            'summary_row_action': summary_action_map[summary_action],
                             'clean_columns': opt_col,
                             'trim_strings': opt_trim,
                             'normalize_phone': opt_phone,
@@ -679,11 +685,24 @@ elif st.session_state['user_role'] == 'client':
 
                 if st.session_state.get('_custom_options'):
                     try:
-                        df_clean, actions = SmartCleaner.clean_dataframe(
+                        df_clean, actions, stats, summary_df, total_check = SmartCleaner.clean_dataframe(
                             df, st.session_state['_custom_options']
                         )
                         new_quality = SmartCleaner.quality_score(df_clean)
-                        st.info(f"已套用自訂選項，品質分數：{new_quality}")
+                        st.success(f"已套用自訂選項，品質分數：{new_quality}")
+
+                        if summary_df is not None and len(summary_df) > 0:
+                            st.markdown("**📋 分離出的總計列**")
+                            st.dataframe(summary_df, use_container_width=True)
+
+                        if total_check:
+                            st.error("🚨 **總計不一致！**")
+                            for item in total_check:
+                                st.markdown(
+                                    f"- **{item['column']}**：明細 `{item['calculated_value']:,}` "
+                                    f"vs 總計 `{item['summary_value']:,}`，"
+                                    f"差額 `{item['difference']:+,}`"
+                                )
                     except Exception as e:
                         st.error(f"自訂清理失敗：{e}")
 
