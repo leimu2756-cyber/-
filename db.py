@@ -12,13 +12,17 @@ from contextlib import contextmanager
 
 # ---------- 判斷環境，取得連線字串 ----------
 def get_database_url():
-	"""優先讀取 Streamlit Secrets（雲端），否則用本地 SQLite"""
-	try:
-		if "DATABASE_URL" in st.secrets:
-			return st.secrets["DATABASE_URL"]
-	except Exception:
-		pass
-	return "sqlite:///freelance_system.db"
+    """優先讀取 Streamlit Secrets（雲端），否則用本地 SQLite"""
+    try:
+        if "DATABASE_URL" in st.secrets:
+            url = st.secrets["DATABASE_URL"]
+            # 把 postgresql:// 換成 postgresql+psycopg://，明確指定用 psycopg v3 驅動
+            if url.startswith("postgresql://"):
+                url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+            return url
+    except Exception:
+        pass
+    return "sqlite:///freelance_system.db"
 
 
 # ---------- 建立 Engine ----------
