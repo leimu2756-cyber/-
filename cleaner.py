@@ -1,7 +1,8 @@
 """
-智慧資料清理引擎 (Smart Data Cleaner) v7
-更新：
-  - 日期轉換不再依賴欄位類型判斷，直接對每一列嘗試轉換
+智慧資料清理引擎 (Smart Data Cleaner) v8
+新增：
+  - 偵測彙總列（總計 / 小計 / 合計 / Total / Subtotal）
+  - 提供 remove_summary_rows 選項
 """
 
 import re
@@ -71,6 +72,14 @@ class SmartCleaner:
         '拾', '佰', '仟', '萬', '億', '元整',
     ]
 
+    SUMMARY_KEYWORDS = [
+        '總計', '小計', '合計', '總和', '總結',
+        'Total', 'Subtotal', 'Sum', 'Grand Total',
+    ]
+
+    # ==========================================================
+    # 中文數字解析
+    # ==========================================================
     @staticmethod
     def parse_chinese_number(text):
         if text is None:
@@ -122,6 +131,9 @@ class SmartCleaner:
 
         return float(total + section + current)
 
+    # ==========================================================
+    # 全形 → 半形
+    # ==========================================================
     @staticmethod
     def to_halfwidth(value):
         if pd.isna(value):
@@ -137,6 +149,9 @@ class SmartCleaner:
                 result.append(ch)
         return ''.join(result)
 
+    # ==========================================================
+    # 儲存格換行處理
+    # ==========================================================
     @staticmethod
     def flatten_newlines(value):
         if pd.isna(value):
@@ -146,6 +161,9 @@ class SmartCleaner:
         s = re.sub(r'\s+', ' ', s)
         return s.strip()
 
+    # ==========================================================
+    # 內部工具
+    # ==========================================================
     @staticmethod
     def _match_ratio(series, pattern):
         s = series.dropna().astype(str).str.strip()
@@ -184,6 +202,30 @@ class SmartCleaner:
 
         return False
 
+    # ==========================================================
+    # 彙總列偵測
+    # ==========================================================
+    @classmethod
+    def _is_summary_row(cls, row):
+        """判斷是否為彙總列（總計 / 小計 / 合計 / Total / Subtotal）"""
+        try:
+            values = [v for v in row.values if pd.notna(v)]
+        except Exception:
+            return False
+        if not values:
+            return False
+
+        # 只看前 3 欄，避免誤判
+        for v in values[:3]:
+            s = str(v).strip()
+            for kw in cls.SUMMARY_KEYWORDS:
+                if kw in s:
+                    return True
+        return False
+
+    # ==========================================================
+    # 欄位類型偵測
+    # ==========================================================
     @classmethod
     def detect_column_type(cls, series):
         s = series.dropna()
@@ -239,7 +281,7 @@ class SmartCleaner:
         except (ValueError, TypeError):
             pass
 
-        # 日期格式字串（含民國年、中文日期）
+        # 日期格式字串
         try:
             date_like = s_str.str.match(
                 r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?)$'
@@ -251,6 +293,9 @@ class SmartCleaner:
 
         return 'text'
 
+    # ==========================================================
+    # 分析報告
+    # ==========================================================
     @classmethod
     def analyze_dataframe(cls, df):
         report = []
@@ -275,6 +320,9 @@ class SmartCleaner:
             })
         return pd.DataFrame(report)
 
+    # ==========================================================
+    # 日期處理
+    # ==========================================================
     @staticmethod
     def _validate_date(y, mo, d):
         try:
@@ -296,27 +344,23 @@ class SmartCleaner:
         if s == '' or s.lower() == 'nan':
             return np.nan
 
-        # 民國115年5月25日
         m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 115年5月25日
         m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 115/5/20 或 115-5-20（三位數年視為民國）
         m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if 1 <= y <= 200:
                 return SmartCleaner._validate_date(y + 1911, mo, d)
 
-        # 四位西元年
         m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -324,6 +368,9 @@ class SmartCleaner:
 
         return value
 
+    # ==========================================================
+    # 貨幣清理
+    # ==========================================================
     @classmethod
     def _clean_currency_value(cls, value):
         if pd.isna(value):
@@ -355,6 +402,9 @@ class SmartCleaner:
         except ValueError:
             return value
 
+    # ==========================================================
+    # 主清理函式
+    # ==========================================================
     @classmethod
     def clean_dataframe(cls, df, options=None):
         options = options or {}
@@ -430,6 +480,17 @@ class SmartCleaner:
             except Exception:
                 pass
 
+        # 5-2. 移除彙總列
+        if options.get('remove_summary_rows', False):
+            try:
+                mask = df_clean.apply(cls._is_summary_row, axis=1)
+                removed = int(mask.sum())
+                if removed > 0:
+                    df_clean = df_clean[~mask].reset_index(drop=True)
+                    actions.append(f"✅ 移除 {removed} 行彙總列（總計 / 小計 / 合計）")
+            except Exception:
+                pass
+
         # 6. 欄位名稱
         if options.get('clean_columns', True):
             try:
@@ -456,7 +517,7 @@ class SmartCleaner:
             if touched:
                 actions.append(f"✅ 清理 {touched} 個文字欄位的頭尾空白")
 
-        # 8. 民國年 / 日期標準化（直接掃描每一列，不看類型）
+        # 8. 民國年 / 日期標準化
         if options.get('normalize_date', True):
             date_fixed = 0
             try:
@@ -544,6 +605,9 @@ class SmartCleaner:
 
         return df_clean, actions
 
+    # ==========================================================
+    # 異常偵測
+    # ==========================================================
     @classmethod
     def detect_anomalies(cls, df):
         anomalies = []
@@ -645,8 +709,25 @@ class SmartCleaner:
             except Exception:
                 pass
 
+        # 彙總列偵測
+        try:
+            summary_mask = df.apply(cls._is_summary_row, axis=1)
+            summary_count = int(summary_mask.sum())
+            if summary_count > 0:
+                anomalies.append({
+                    '欄位': '（整列）',
+                    '類型': '彙總列',
+                    '數量': summary_count,
+                    '說明': '偵測到「總計 / 小計 / 合計」等彙總列，建議確認是否要保留',
+                })
+        except Exception:
+            pass
+
         return anomalies
 
+    # ==========================================================
+    # 品質評分
+    # ==========================================================
     @classmethod
     def quality_score(cls, df):
         if len(df) == 0 or len(df.columns) == 0:
