@@ -1,8 +1,7 @@
 """
-智慧資料清理引擎 (Smart Data Cleaner) v6
+智慧資料清理引擎 (Smart Data Cleaner) v7
 更新：
-  - date_str 正則支援三位數年份（民國年 115/07/15）
-  - 日期格式偵測支援中文日期（115年7月17日）
+  - 日期轉換不再依賴欄位類型判斷，直接對每一列嘗試轉換
 """
 
 import re
@@ -72,9 +71,6 @@ class SmartCleaner:
         '拾', '佰', '仟', '萬', '億', '元整',
     ]
 
-    # ==========================================================
-    # 中文數字解析
-    # ==========================================================
     @staticmethod
     def parse_chinese_number(text):
         if text is None:
@@ -126,9 +122,6 @@ class SmartCleaner:
 
         return float(total + section + current)
 
-    # ==========================================================
-    # 全形 → 半形
-    # ==========================================================
     @staticmethod
     def to_halfwidth(value):
         if pd.isna(value):
@@ -144,9 +137,6 @@ class SmartCleaner:
                 result.append(ch)
         return ''.join(result)
 
-    # ==========================================================
-    # 儲存格內換行處理
-    # ==========================================================
     @staticmethod
     def flatten_newlines(value):
         if pd.isna(value):
@@ -156,9 +146,6 @@ class SmartCleaner:
         s = re.sub(r'\s+', ' ', s)
         return s.strip()
 
-    # ==========================================================
-    # 內部工具
-    # ==========================================================
     @staticmethod
     def _match_ratio(series, pattern):
         s = series.dropna().astype(str).str.strip()
@@ -197,9 +184,6 @@ class SmartCleaner:
 
         return False
 
-    # ==========================================================
-    # 欄位類型偵測
-    # ==========================================================
     @classmethod
     def detect_column_type(cls, series):
         s = series.dropna()
@@ -267,9 +251,6 @@ class SmartCleaner:
 
         return 'text'
 
-    # ==========================================================
-    # 分析報告
-    # ==========================================================
     @classmethod
     def analyze_dataframe(cls, df):
         report = []
@@ -294,9 +275,6 @@ class SmartCleaner:
             })
         return pd.DataFrame(report)
 
-    # ==========================================================
-    # 日期處理
-    # ==========================================================
     @staticmethod
     def _validate_date(y, mo, d):
         try:
@@ -346,9 +324,6 @@ class SmartCleaner:
 
         return value
 
-    # ==========================================================
-    # 貨幣清理
-    # ==========================================================
     @classmethod
     def _clean_currency_value(cls, value):
         if pd.isna(value):
@@ -380,9 +355,6 @@ class SmartCleaner:
         except ValueError:
             return value
 
-    # ==========================================================
-    # 主清理函式
-    # ==========================================================
     @classmethod
     def clean_dataframe(cls, df, options=None):
         options = options or {}
@@ -484,66 +456,30 @@ class SmartCleaner:
             if touched:
                 actions.append(f"✅ 清理 {touched} 個文字欄位的頭尾空白")
 
-        # 8. 民國年 / 日期標準化
+        # 8. 民國年 / 日期標準化（直接掃描每一列，不看類型）
         if options.get('normalize_date', True):
             date_fixed = 0
-            invalid_dates = 0
             try:
                 for col in df_clean.columns:
                     try:
-                        ctype = cls.detect_column_type(df_clean[col])
+                        original = df_clean[col].tolist()
+                        converted = [
+                            cls._convert_minguo_to_western(v) for v in original
+                        ]
+                        changed = sum(
+                            1 for o, n in zip(original, converted)
+                            if str(o) != str(n)
+                        )
+                        if changed > 0:
+                            df_clean[col] = converted
+                            date_fixed += changed
                     except Exception:
-                        continue
-
-                    if ctype in ('text', 'date_str', 'date'):
-                        try:
-                            original = df_clean[col].tolist()
-                            converted = [
-                                cls._convert_minguo_to_western(v) for v in original
-                            ]
-                            changed = sum(
-                                1 for o, n in zip(original, converted)
-                                if str(o) != str(n)
-                            )
-                            if changed > 0:
-                                df_clean[col] = converted
-                                date_fixed += changed
-                        except Exception:
-                            pass
-
-                    try:
-                        ctype = cls.detect_column_type(df_clean[col])
-                    except Exception:
-                        continue
-
-                    if ctype == 'date':
-                        try:
-                            original = df_clean[col].tolist()
-                            new_vals = []
-                            for v in original:
-                                if pd.isna(v):
-                                    new_vals.append(np.nan)
-                                    continue
-                                s = str(v).strip()
-                                m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
-                                if m:
-                                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                                    result = cls._validate_date(y, mo, d)
-                                    if '無效' in result:
-                                        invalid_dates += 1
-                                    new_vals.append(result)
-                                else:
-                                    new_vals.append(v)
-                            df_clean[col] = new_vals
-                        except Exception:
-                            pass
+                        pass
             except Exception:
                 pass
 
             if date_fixed > 0:
                 actions.append(f"✅ 轉換 {date_fixed} 個民國年 / 日期格式為西元")
-            if invalid_dates > 0:
-                actions.append(f"⚠️ 偵測到 {invalid_dates} 個無效日期，已標記")
 
         # 9. 貨幣清理
         if options.get('clean_currency', True):
@@ -608,9 +544,6 @@ class SmartCleaner:
 
         return df_clean, actions
 
-    # ==========================================================
-    # 異常偵測
-    # ==========================================================
     @classmethod
     def detect_anomalies(cls, df):
         anomalies = []
@@ -714,9 +647,6 @@ class SmartCleaner:
 
         return anomalies
 
-    # ==========================================================
-    # 品質評分
-    # ==========================================================
     @classmethod
     def quality_score(cls, df):
         if len(df) == 0 or len(df.columns) == 0:
