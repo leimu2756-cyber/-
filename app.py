@@ -21,18 +21,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------- 隱藏 Streamlit 預設 UI ----------
 st.markdown("""
 <style>
-    /* 隱藏右上角工具列 */
     [data-testid="stToolbar"] { display: none !important; }
-    /* 隱藏頂部 header */
     header[data-testid="stHeader"] { display: none !important; }
-    /* 隱藏頁尾 */
     footer { visibility: hidden !important; }
-    /* 隱藏漢堡選單 */
     #MainMenu { visibility: hidden !important; }
-    /* 隱藏 deploy 按鈕 */
     [data-testid="stAppDeployButton"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -387,14 +381,34 @@ elif st.session_state['user_role'] == 'client':
                     return False
 
                 def is_header_row(row):
+                    """判斷是否像表頭：
+                    1. 填充率 >= 50%（非空值比例）
+                    2. 非空值中 >= 60% 是文字
+                    """
                     try:
-                        vals = [str(v) for v in row.values if pd.notna(v) and str(v).strip()]
+                        vals = list(row.values)
                     except Exception:
                         return False
-                    if not vals:
+
+                    non_empty = [
+                        v for v in vals
+                        if pd.notna(v) and str(v).strip() not in ('', 'nan', 'None')
+                    ]
+                    if not non_empty:
                         return False
+
+                    total_cols = len(vals)
+                    if total_cols == 0:
+                        return False
+
+                    # 填充率過低 → 是大標題，不是表頭
+                    fill_ratio = len(non_empty) / total_cols
+                    if fill_ratio < 0.5:
+                        return False
+
+                    # 文字比例
                     text_count = 0
-                    for v in vals:
+                    for v in non_empty:
                         cleaned = (
                             str(v)
                             .replace('.', '').replace('-', '').replace(',', '')
@@ -402,13 +416,15 @@ elif st.session_state['user_role'] == 'client':
                         )
                         if cleaned and not cleaned.isdigit():
                             text_count += 1
-                    return text_count >= len(vals) * 0.7
+
+                    return text_count >= len(non_empty) * 0.6
 
                 def build_dataframe(df_raw, skip_n, header_n, auto_mode):
                     if skip_n > 0:
                         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
                     if auto_mode:
+                        # 1. 移除垃圾行
                         garbage_idx = [
                             i for i in range(len(df_raw))
                             if is_garbage_row(df_raw.iloc[i])
@@ -416,16 +432,23 @@ elif st.session_state['user_role'] == 'client':
                         if garbage_idx:
                             df_raw = df_raw.drop(index=garbage_idx).reset_index(drop=True)
 
-                        if len(df_raw) > 0 and is_header_row(df_raw.iloc[0]):
+                        # 2. 在前 10 行中，找第一個「表頭行」
+                        header_idx = None
+                        for i in range(min(len(df_raw), 10)):
+                            if is_header_row(df_raw.iloc[i]):
+                                header_idx = i
+                                break
+
+                        if header_idx is not None:
                             df = df_raw.copy()
                             new_cols = []
-                            for i, c in enumerate(df.iloc[0].values):
+                            for i, c in enumerate(df.iloc[header_idx].values):
                                 c_str = str(c).strip()
                                 if not c_str or c_str.lower() == 'nan':
                                     c_str = f"欄位{i+1}"
                                 new_cols.append(c_str)
                             df.columns = new_cols
-                            df = df[1:].reset_index(drop=True)
+                            df = df[header_idx+1:].reset_index(drop=True)
                             return df
                         else:
                             df = df_raw.copy()
