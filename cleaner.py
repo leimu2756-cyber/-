@@ -6,6 +6,7 @@ import numpy as np
 from utils import (
     to_halfwidth, flatten_newlines, convert_minguo_to_western,
     clean_currency_value, validate_date, is_summary_row, is_non_data_row,
+    parse_chinese_number, has_chinese_number,
     EXCEL_ERRORS, NON_DATA_KEYWORDS, SUMMARY_KEYWORDS,
     CN_MONEY_INDICATORS,
 )
@@ -50,9 +51,34 @@ class SmartCleaner:
         if len(s_str) == 0:
             return 'empty'
 
+        # 中文數字 → 視為數字
         try:
-            cn_count = s_str.apply(lambda x: any(ind in x for ind in CN_MONEY_INDICATORS)).sum()
-            if cn_count / len(s_str) >= 0.5:
+            cn_count = s_str.apply(has_chinese_number).sum()
+            if cn_count / len(s_str) >= 0.3:
+                # 如果大部分含中文數字，且可解析為數字
+                parseable = 0
+                for v in s_str:
+                    if has_chinese_number(v):
+                        if parse_chinese_number(v) is not None:
+                            parseable += 1
+                    else:
+                        # 純數字也算
+                        try:
+                            float(v)
+                            parseable += 1
+                        except ValueError:
+                            pass
+                if parseable / len(s_str) >= 0.6:
+                    return 'number'
+        except Exception:
+            pass
+
+        # 貨幣
+        try:
+            cn_money = s_str.apply(
+                lambda x: any(ind in x for ind in CN_MONEY_INDICATORS)
+            ).sum()
+            if cn_money / len(s_str) >= 0.5:
                 return 'currency'
         except Exception:
             pass
@@ -123,9 +149,6 @@ class SmartCleaner:
 
     @classmethod
     def clean_dataframe(cls, df, options=None):
-        """主清理函式
-        回傳：(df_clean, actions, stats, summary_df, total_check)
-        """
         options = options or {}
         df_clean = df.copy().reset_index(drop=True)
         actions = []
@@ -138,6 +161,7 @@ class SmartCleaner:
             'cells_newline': 0,
             'dates_fixed': 0,
             'currency_fixed': 0,
+            'chinese_numbers_fixed': 0,
             'phones_fixed': 0,
             'emails_fixed': 0,
             'columns_cleaned': 0,
@@ -261,6 +285,42 @@ class SmartCleaner:
                 stats['dates_fixed'] = fixed
                 actions.append(f"✅ 轉換 {fixed} 個日期格式")
 
+        # 8-2. 中文數字轉換（新增：全欄掃描）
+        if options.get('normalize_chinese_number', True):
+            cn_fixed = 0
+            try:
+                for col in df_clean.columns:
+                    # 檢查該欄是否有中文數字
+                    col_has_cn = False
+                    for v in df_clean[col].dropna().astype(str):
+                        if has_chinese_number(v):
+                            col_has_cn = True
+                            break
+                    if not col_has_cn:
+                        continue
+
+                    # 逐值轉換
+                    orig = df_clean[col].tolist()
+                    conv = []
+                    for v in orig:
+                        if pd.isna(v):
+                            conv.append(v)
+                            continue
+                        s = str(v).strip()
+                        if has_chinese_number(s):
+                            parsed = parse_chinese_number(s)
+                            if parsed is not None:
+                                conv.append(parsed)
+                                cn_fixed += 1
+                                continue
+                        conv.append(v)
+                    df_clean[col] = conv
+            except Exception:
+                pass
+            if cn_fixed > 0:
+                stats['chinese_numbers_fixed'] = cn_fixed
+                actions.append(f"✅ 轉換 {cn_fixed} 個中文數字為阿拉伯數字")
+
         # 9. 貨幣
         if options.get('clean_currency', True):
             fixed = 0
@@ -318,7 +378,7 @@ class SmartCleaner:
             df_clean = df_clean.fillna(fill_value)
             actions.append(f"✅ 空白值填補為「{fill_value}」")
 
-        # 13. 彙總列處理
+        # 13. 彙總列
         summary_action = options.get('summary_row_action', 'keep')
         summary_df = None
         total_check = []
@@ -338,7 +398,7 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # 14. 重複標記（不刪除）
+        # 14. 重複標記
         if options.get('flag_duplicates', False):
             try:
                 key_cols = options.get('duplicate_keys', [])
@@ -357,7 +417,6 @@ class SmartCleaner:
 
     @staticmethod
     def _validate_totals(df, summary_indices):
-        """比對明細加總 vs 總計列"""
         results = []
         detail = df.drop(index=summary_indices, errors='ignore')
         for col in df.columns:
