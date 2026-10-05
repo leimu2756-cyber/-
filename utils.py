@@ -39,22 +39,20 @@ SUMMARY_KEYWORDS = [
     'Total', 'Subtotal', 'Sum', 'Grand Total',
 ]
 
+# 單位尾綴（移除這些字，前面的數字就是答案）
+UNIT_SUFFIXES = ['分', '級', '级', '歲', '岁', '個', '个', '件', '顆', '颗',
+                 '元', '塊', '块', '張', '张', '台', '組', '组', '人',
+                 '次', '筆', '笔', '年', '月', '日', '小時', '小时']
+
 
 def parse_chinese_number(text):
-    """
-    中文數字 → 阿拉伯數字
-    支援：
-      - 純中文（二十、一百二十三、參拾伍萬）
-      - 混合格式（九十9、9十、一百2十）
-      - 純阿拉伯數字
-    """
+    """中文數字 → 阿拉伯數字（支援混合格式）"""
     if text is None:
         return None
     s = str(text).strip()
     if not s:
         return None
 
-    # 去掉尾綴
     for suf in CN_SUFFIXES:
         if s.endswith(suf):
             s = s[:-len(suf)].strip()
@@ -103,7 +101,6 @@ def parse_chinese_number(text):
         elif ch in '., ':
             continue
         else:
-            # 遇到無法辨識的字元 → 放棄（避免誤傷「一箱」、「第一天」）
             return None
 
     flush_num_buffer()
@@ -112,6 +109,43 @@ def parse_chinese_number(text):
         return None
 
     return float(total + section + current)
+
+
+def strip_unit_suffix(value):
+    """
+    移除單位尾綴，回傳數字
+    例如：
+      '89分'    → 89.0
+      '六級'    → 6.0
+      '11級'    → 11.0
+      '十五歲'  → 15.0
+    若無法解析，回傳原值
+    """
+    if pd.isna(value):
+        return value
+
+    s = str(value).strip()
+    if not s:
+        return value
+
+    # 先嘗試：阿拉伯數字 + 單位
+    for suf in UNIT_SUFFIXES:
+        if s.endswith(suf):
+            inner = s[:-len(suf)].strip()
+            if not inner:
+                continue
+            # 純數字
+            try:
+                return float(inner)
+            except ValueError:
+                pass
+            # 中文數字
+            parsed = parse_chinese_number(inner)
+            if parsed is not None:
+                return parsed
+            return value  # 有其他字元就不處理
+
+    return value
 
 
 def has_chinese_number(text):
@@ -199,13 +233,11 @@ def clean_currency_value(value):
     if s == '' or s.lower() == 'nan':
         return np.nan
 
-    # 中文數字（優先）
     if has_chinese_number(s):
         parsed = parse_chinese_number(s)
         if parsed is not None:
             return parsed
 
-    # 會計負數 (8)
     m = re.match(r'^\(([\d,\.]+)\)$', s)
     if m:
         try:
