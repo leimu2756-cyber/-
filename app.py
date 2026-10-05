@@ -1,6 +1,5 @@
 import os
 import io
-import json
 import bcrypt
 import pandas as pd
 import streamlit as st
@@ -11,6 +10,7 @@ from templates import detect_template, suggest_column_mapping, TEMPLATES
 from merge import merge_files
 from report import build_clean_report, build_anomaly_table, build_total_check_table
 from analytics import render_analytics
+from utils import build_dataframe, is_garbage_row, is_header_row
 from db import init_db, fetch_one, fetch_all, execute
 
 
@@ -20,7 +20,6 @@ from db import init_db, fetch_one, fetch_all, execute
 MASTER_PASSWORD = '2012011220120629LryCsy'
 ADMIN_EMAIL = '717804lin@gmail.com'
 
-# 公告內容（可變數控制）
 ANNOUNCEMENT = {
     'title': '📢 公告',
     'content': """
@@ -34,7 +33,7 @@ ANNOUNCEMENT = {
 
 感謝你的使用。
 """,
-    'level': 'info',  # info / warning / success / error
+    'level': 'info',
 }
 
 st.set_page_config(
@@ -58,7 +57,6 @@ try:
 except Exception as e:
     st.warning(f"⚠️ 資料庫連線異常：{e}")
 
-# Session 初始化
 for key, default in [('logged_in', False), ('user_role', None), ('username', None),
                      ('history', [])]:
     if key not in st.session_state:
@@ -66,7 +64,7 @@ for key, default in [('logged_in', False), ('user_role', None), ('username', Non
 
 
 # ============================================================
-# 1. 側邊欄：登入 / 註冊 / 管理員
+# 1. 側邊欄
 # ============================================================
 st.sidebar.title("🧹 AI 資料清理工作台")
 client_page = None
@@ -133,7 +131,8 @@ else:
     st.sidebar.caption(f"角色：{'管理員' if st.session_state['user_role'] == 'admin' else '客戶'}")
     if st.session_state['user_role'] == 'client':
         client_page = st.sidebar.radio(
-            "功能選單", ["🧹 資料清理工作台", "💬 意見反饋"]
+            "功能選單", ["🧹 資料清理工作台", "💬 意見反饋"],
+            key="client_nav_radio",
         )
     if st.sidebar.button("登出"):
         st.session_state.update(logged_in=False, user_role=None, username=None)
@@ -144,12 +143,10 @@ else:
 # 2. 未登入首頁
 # ============================================================
 if not st.session_state['logged_in']:
-    # 公告
-    with st.container():
-        if ANNOUNCEMENT['level'] == 'info':
-            st.info(f"**{ANNOUNCEMENT['title']}**\n\n{ANNOUNCEMENT['content']}")
-        elif ANNOUNCEMENT['level'] == 'warning':
-            st.warning(f"**{ANNOUNCEMENT['title']}**\n\n{ANNOUNCEMENT['content']}")
+    if ANNOUNCEMENT['level'] == 'info':
+        st.info(f"**{ANNOUNCEMENT['title']}**\n\n{ANNOUNCEMENT['content']}")
+    elif ANNOUNCEMENT['level'] == 'warning':
+        st.warning(f"**{ANNOUNCEMENT['title']}**\n\n{ANNOUNCEMENT['content']}")
 
     st.title("🧹 AI 資料清理工作台")
     st.info("👈 請從左側選單登入或註冊，所有功能完全免費。")
@@ -240,7 +237,6 @@ elif st.session_state['user_role'] == 'admin':
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
 
-    # ---------- 意見反饋 ----------
     if client_page == "💬 意見反饋":
         st.title("💬 意見反饋與客製化需求")
         st.markdown(f"""
@@ -269,11 +265,9 @@ elif st.session_state['user_role'] == 'client':
                     st.balloons()
         st.divider()
 
-    # ---------- 資料清理工作台 ----------
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
-        # 公告（放在最顯眼位置）
         if ANNOUNCEMENT['level'] == 'info':
             st.info(f"**{ANNOUNCEMENT['title']}**\n\n{ANNOUNCEMENT['content']}")
         elif ANNOUNCEMENT['level'] == 'warning':
@@ -281,7 +275,6 @@ elif st.session_state['user_role'] == 'client':
 
         st.success("🔓 **所有功能完全免費** —— 無使用次數限制")
 
-        # Tabs
         tab1, tab2, tab3 = st.tabs(["📂 單檔整理", "🔗 多檔合併", "📊 資料分析"])
 
         # ====================================================
@@ -298,7 +291,6 @@ elif st.session_state['user_role'] == 'client':
             if uploaded_file is None:
                 st.info("👆 上傳檔案後，系統會自動清理並提供下載。")
             else:
-                # 讀取檔案
                 with st.spinner("正在讀取檔案…"):
                     df_raw, load_err = load_any_file(uploaded_file)
 
@@ -310,7 +302,6 @@ elif st.session_state['user_role'] == 'client':
 
                     st.caption(f"📊 讀取結果：{len(df_raw)} 列 × {len(df_raw.columns)} 欄")
 
-                    # 檔案大小警告
                     try:
                         size = len(uploaded_file.getvalue())
                         if size > SINGLE_FILE_LIMIT:
@@ -318,95 +309,14 @@ elif st.session_state['user_role'] == 'client':
                     except Exception:
                         pass
 
-                    # 手動設定
                     with st.expander("⚙️ 讀取設定", expanded=False):
-                        manual_mode = st.checkbox("手動指定標題位置", value=False)
+                        manual_mode = st.checkbox("手動指定標題位置", value=False, key="single_manual")
                         if manual_mode:
-                            skip_n = st.number_input("跳過前幾行", min_value=0, max_value=100, value=2)
+                            skip_n = st.number_input("跳過前幾行", min_value=0, max_value=100, value=2, key="single_skip")
                             header_n = st.number_input("第幾行是標題（0=第一行，-1=無標題）",
-                                                       min_value=-1, max_value=100, value=0)
+                                                       min_value=-1, max_value=100, value=0, key="single_header")
                         else:
                             skip_n, header_n = 0, 0
-
-                    # 標題偵測
-                    from app import _build_dataframe  # 同檔內使用
-                    # 因 app.py 是主入口，直接定義
-                    def is_garbage_row(row):
-                        try:
-                            row_str = ' '.join(str(v) for v in row.values if pd.notna(v))
-                        except Exception:
-                            return False
-                        if not row_str.strip():
-                            return False
-                        for kw in ['###', '===', '---', '系統警告', '報表結束',
-                                   '資料嚴重損毀', '公司名稱']:
-                            if kw in row_str:
-                                return True
-                        return False
-
-                    def is_header_row(row):
-                        try:
-                            vals = list(row.values)
-                        except Exception:
-                            return False
-                        non_empty = [v for v in vals if pd.notna(v) and str(v).strip() not in ('', 'nan', 'None')]
-                        if not non_empty or not vals:
-                            return False
-                        if len(non_empty) / len(vals) < 0.5:
-                            return False
-                        text_count = 0
-                        for v in non_empty:
-                            cleaned = (str(v).replace('.', '').replace('-', '')
-                                       .replace(',', '').replace('/', '').replace(' ', '').strip())
-                            if cleaned and not cleaned.isdigit():
-                                text_count += 1
-                        return text_count >= len(non_empty) * 0.6
-
-                    def build_dataframe(df_raw, skip_n, header_n, auto_mode):
-                        if skip_n > 0:
-                            df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
-                        if auto_mode:
-                            garbage_idx = [i for i in range(len(df_raw)) if is_garbage_row(df_raw.iloc[i])]
-                            if garbage_idx:
-                                df_raw = df_raw.drop(index=garbage_idx).reset_index(drop=True)
-                            header_idx = None
-                            for i in range(min(len(df_raw), 10)):
-                                if is_header_row(df_raw.iloc[i]):
-                                    header_idx = i
-                                    break
-                            if header_idx is not None:
-                                df = df_raw.copy()
-                                new_cols = []
-                                for i, c in enumerate(df.iloc[header_idx].values):
-                                    c_str = str(c).strip()
-                                    if not c_str or c_str.lower() == 'nan':
-                                        c_str = f"欄位{i+1}"
-                                    new_cols.append(c_str)
-                                df.columns = new_cols
-                                return df[header_idx+1:].reset_index(drop=True)
-                            else:
-                                df = df_raw.copy()
-                                df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
-                                return df
-                        else:
-                            if header_n == -1:
-                                df = df_raw.copy()
-                                df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
-                                return df
-                            elif 0 <= header_n < len(df_raw):
-                                df = df_raw.copy()
-                                new_cols = []
-                                for i, c in enumerate(df.iloc[header_n].values):
-                                    c_str = str(c).strip()
-                                    if not c_str or c_str.lower() == 'nan':
-                                        c_str = f"欄位{i+1}"
-                                    new_cols.append(c_str)
-                                df.columns = new_cols
-                                return df[header_n+1:].reset_index(drop=True)
-                            else:
-                                df = df_raw.copy()
-                                df.columns = [f"欄位{i+1}" for i in range(len(df.columns))]
-                                return df
 
                     try:
                         df = build_dataframe(df_raw, skip_n, header_n, auto_mode=(not manual_mode))
@@ -416,37 +326,35 @@ elif st.session_state['user_role'] == 'client':
 
                     st.caption(f"📊 清理前：{len(df)} 列 × {len(df.columns)} 欄")
 
-                    # 模板偵測
                     template_info = detect_template(df)
                     if template_info['template']:
                         st.info(f"🎯 偵測到行業模板：**{template_info['template']}**（信心度 {int(template_info['confidence']*100)}%）")
 
-                    # 欄位建議
                     col_suggest = suggest_column_mapping(df)
                     if col_suggest:
                         with st.expander("💡 系統建議的欄位對應", expanded=False):
                             for k, v in col_suggest.items():
                                 st.write(f"- **{k}** → `{v}`")
 
-                    # 進階選項
                     with st.expander("⚙️ 清理選項", expanded=False):
-                        template_choice = st.selectbox("選擇模板", list(TEMPLATES.keys()), index=0)
+                        template_choice = st.selectbox("選擇模板", list(TEMPLATES.keys()), index=0, key="single_tpl")
                         summary_action = st.radio(
                             "彙總列處理方式",
                             ["保留在資料中", "完全移除", "分離到另一張表"],
                             index=2,
+                            key="single_summary",
                         )
                         summary_action_map = {
                             "保留在資料中": "keep",
                             "完全移除": "remove",
                             "分離到另一張表": "separate",
                         }
-                        opt_dup = st.checkbox("移除完全重複的列", value=True)
-                        opt_flag_dup = st.checkbox("標記疑似重複（不刪除）", value=False)
-                        opt_date = st.checkbox("標準化日期格式", value=True)
-                        opt_currency = st.checkbox("清理貨幣 / 中文數字", value=True)
-                        opt_phone = st.checkbox("標準化電話格式", value=True)
-                        opt_email = st.checkbox("Email 轉小寫", value=True)
+                        opt_dup = st.checkbox("移除完全重複的列", value=True, key="single_dup")
+                        opt_flag_dup = st.checkbox("標記疑似重複（不刪除）", value=False, key="single_flagdup")
+                        opt_date = st.checkbox("標準化日期格式", value=True, key="single_date")
+                        opt_currency = st.checkbox("清理貨幣 / 中文數字", value=True, key="single_curr")
+                        opt_phone = st.checkbox("標準化電話格式", value=True, key="single_phone")
+                        opt_email = st.checkbox("Email 轉小寫", value=True, key="single_email")
 
                     if st.button("🚀 開始清理", type="primary", key="single_clean_btn"):
                         progress = st.progress(0)
@@ -479,12 +387,10 @@ elif st.session_state['user_role'] == 'client':
 
                         status.text("步驟 2/3：產生報告…")
                         progress.progress(70)
-
                         status.text("步驟 3/3：完成！")
                         progress.progress(100)
                         status.empty()
 
-                        # 總計警示
                         if total_check:
                             st.error("🚨 **總計不一致！**")
                             for item in total_check:
@@ -496,7 +402,6 @@ elif st.session_state['user_role'] == 'client':
                                     f"差額 `{item['difference']:+,}`（{pct:.2f}%）"
                                 )
 
-                        # 下載區
                         st.markdown("---")
                         st.markdown("## ✅ 清理完成！")
                         col_a, col_b, col_c = st.columns(3)
@@ -506,7 +411,8 @@ elif st.session_state['user_role'] == 'client':
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes,
                                               f"{base}_cleaned.csv", "text/csv",
-                                              use_container_width=True, type="primary")
+                                              use_container_width=True, type="primary",
+                                              key="single_dl_csv")
 
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
@@ -523,15 +429,16 @@ elif st.session_state['user_role'] == 'client':
                             st.download_button("📊 下載 Excel", excel_bytes,
                                               f"{base}_cleaned.xlsx",
                                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                              use_container_width=True)
+                                              use_container_width=True,
+                                              key="single_dl_xlsx")
 
                         json_bytes = df_clean.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
                         with col_c:
                             st.download_button("📋 下載 JSON", json_bytes,
                                               f"{base}_cleaned.json", "application/json",
-                                              use_container_width=True)
+                                              use_container_width=True,
+                                              key="single_dl_json")
 
-                        # 摘要
                         st.markdown("---")
                         c1, c2, c3 = st.columns(3)
                         c1.metric("原始資料", f"{len(df)} 列")
@@ -541,7 +448,6 @@ elif st.session_state['user_role'] == 'client':
                         c3.metric("品質分數", f"{quality_after} / 100",
                                   delta=f"+{round(quality_after - quality_before, 1)}" if quality_after > quality_before else "0")
 
-                        # 清理報告
                         with st.expander("📊 清理報告", expanded=True):
                             rep = build_clean_report(stats, total_check, template_info)
                             if len(rep) > 0:
@@ -549,24 +455,20 @@ elif st.session_state['user_role'] == 'client':
                             else:
                                 st.info("沒有需要處理的地方。")
 
-                        # 前後對比
                         with st.expander("🔍 清理前後對比（前 10 筆）", expanded=False):
                             st.markdown("**清理前**")
                             st.dataframe(df.head(10), use_container_width=True)
                             st.markdown("**清理後**")
                             st.dataframe(df_clean.head(10), use_container_width=True)
 
-                        # 欄位報告
                         with st.expander("🤖 欄位識別報告", expanded=False):
                             st.dataframe(report_df.drop(columns=['_raw_type'], errors='ignore'),
                                         use_container_width=True)
 
-                        # 異常清單
                         if anomalies:
                             with st.expander("⚠️ 異常清單", expanded=True):
                                 st.dataframe(pd.DataFrame(anomalies), use_container_width=True)
 
-                        # 記錄歷史
                         try:
                             st.session_state['history'].insert(0, {
                                 'file': uploaded_file.name,
@@ -577,7 +479,6 @@ elif st.session_state['user_role'] == 'client':
                         except Exception:
                             pass
 
-                        # 寫入 log
                         try:
                             execute(
                                 "INSERT INTO usage_log (username, filename, rows, cols, actions) "
@@ -606,7 +507,6 @@ elif st.session_state['user_role'] == 'client':
             if not uploaded_files:
                 st.info("👆 上傳多個檔案後，系統會自動清理並合併。")
             else:
-                # 檔案大小檢查
                 total_size = 0
                 for f in uploaded_files:
                     try:
@@ -621,16 +521,16 @@ elif st.session_state['user_role'] == 'client':
                     with col1:
                         merge_mode = st.radio("合併模式",
                                               ["寬鬆（聯集所有欄位）", "嚴格（只保留共同欄位）"],
-                                              index=0)
+                                              index=0,
+                                              key="merge_mode_radio")
                     with col2:
-                        opt_keep_source = st.checkbox("保留「來源檔案」欄位", value=True)
-                        opt_flag_dup = st.checkbox("標記疑似重複", value=True)
+                        opt_keep_source = st.checkbox("保留「來源檔案」欄位", value=True, key="merge_keep")
+                        opt_flag_dup = st.checkbox("標記疑似重複", value=True, key="merge_flag")
 
                 if st.button("🚀 開始合併", type="primary", key="merge_btn"):
                     progress = st.progress(0)
                     status = st.empty()
 
-                    # 讀取所有檔案
                     files_data = []
                     for i, f in enumerate(uploaded_files):
                         status.text(f"正在讀取第 {i+1} 個檔案，共 {len(uploaded_files)} 個…")
@@ -639,33 +539,8 @@ elif st.session_state['user_role'] == 'client':
                         if df_raw is None:
                             st.warning(f"跳過 {f.name}：{err}")
                             continue
-                        # 標題偵測（簡化版：直接使用自動偵測）
-                        from app import is_garbage_row as _isg, is_header_row as _ish
-                        def build_df(dfr):
-                            garbage_idx = [i for i in range(len(dfr)) if _isg(dfr.iloc[i])]
-                            if garbage_idx:
-                                dfr = dfr.drop(index=garbage_idx).reset_index(drop=True)
-                            hidx = None
-                            for i in range(min(len(dfr), 10)):
-                                if _ish(dfr.iloc[i]):
-                                    hidx = i
-                                    break
-                            if hidx is not None:
-                                d = dfr.copy()
-                                nc = []
-                                for i, c in enumerate(d.iloc[hidx].values):
-                                    c_str = str(c).strip()
-                                    if not c_str or c_str.lower() == 'nan':
-                                        c_str = f"欄位{i+1}"
-                                    nc.append(c_str)
-                                d.columns = nc
-                                return d[hidx+1:].reset_index(drop=True)
-                            else:
-                                d = dfr.copy()
-                                d.columns = [f"欄位{i+1}" for i in range(len(d.columns))]
-                                return d
                         try:
-                            df_use = build_df(df_raw)
+                            df_use = build_dataframe(df_raw, 0, 0, auto_mode=True)
                             files_data.append({'name': f.name, 'df': df_use})
                         except Exception as e:
                             st.warning(f"跳過 {f.name}：{e}")
@@ -694,13 +569,13 @@ elif st.session_state['user_role'] == 'client':
                         stats = result['stats']
                         st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
 
-                        # 下載
                         st.markdown("---")
                         col_a, col_b = st.columns(2)
                         csv_bytes = merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
-                                              "text/csv", use_container_width=True, type="primary")
+                                              "text/csv", use_container_width=True, type="primary",
+                                              key="merge_dl_csv")
 
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
@@ -711,7 +586,6 @@ elif st.session_state['user_role'] == 'client':
                             if result.get('anomalies'):
                                 pd.DataFrame(result['anomalies']).to_excel(
                                     writer, index=False, sheet_name='異常清單')
-                            # 原始總計
                             total_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
@@ -728,9 +602,9 @@ elif st.session_state['user_role'] == 'client':
                         with col_b:
                             st.download_button("📊 下載 Excel", excel_bytes, "merged.xlsx",
                                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                              use_container_width=True)
+                                              use_container_width=True,
+                                              key="merge_dl_xlsx")
 
-                        # 統計
                         st.markdown("---")
                         c1, c2, c3, c4 = st.columns(4)
                         c1.metric("檔案數", stats['files'])
@@ -738,7 +612,6 @@ elif st.session_state['user_role'] == 'client':
                         c3.metric("移除空白", stats['removed_non_data'])
                         c4.metric("移除總計", stats['removed_summary'])
 
-                        # 總計驗證
                         total_rows = []
                         for info in result['files_info']:
                             for tc in info.get('total_check', []):
@@ -754,11 +627,9 @@ elif st.session_state['user_role'] == 'client':
                             st.error("🚨 **總計不一致**")
                             st.dataframe(pd.DataFrame(total_rows), use_container_width=True)
 
-                        # 預覽
                         with st.expander("📋 合併結果預覽", expanded=True):
                             st.dataframe(merged.head(20), use_container_width=True)
 
-                        # 異常
                         if result.get('anomalies'):
                             with st.expander("⚠️ 異常清單", expanded=False):
                                 st.dataframe(pd.DataFrame(result['anomalies']), use_container_width=True)
@@ -784,9 +655,7 @@ elif st.session_state['user_role'] == 'client':
                 if df_a is None:
                     st.error(f"讀取失敗：{err}")
                 else:
-                    # 簡單標題處理
                     try:
-                        # 找第一行有內容的當標題
                         first_valid = None
                         for i in range(min(len(df_a), 10)):
                             row = df_a.iloc[i]
@@ -803,7 +672,6 @@ elif st.session_state['user_role'] == 'client':
                     st.caption(f"📊 讀取結果：{len(df_a)} 列 × {len(df_a.columns)} 欄")
                     render_analytics(df_a)
 
-        # ---------- 檔案歷史 ----------
         if st.session_state.get('history'):
             with st.sidebar.expander("📜 最近處理紀錄", expanded=False):
                 for h in st.session_state['history']:
