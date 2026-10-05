@@ -6,7 +6,7 @@ import numpy as np
 from utils import (
     to_halfwidth, flatten_newlines, convert_minguo_to_western,
     clean_currency_value, validate_date, is_summary_row, is_non_data_row,
-    parse_chinese_number, has_chinese_number,
+    parse_chinese_number, has_chinese_number, strip_unit_suffix,
     EXCEL_ERRORS, NON_DATA_KEYWORDS, SUMMARY_KEYWORDS,
     CN_MONEY_INDICATORS,
 )
@@ -55,14 +55,12 @@ class SmartCleaner:
         try:
             cn_count = s_str.apply(has_chinese_number).sum()
             if cn_count / len(s_str) >= 0.3:
-                # 如果大部分含中文數字，且可解析為數字
                 parseable = 0
                 for v in s_str:
                     if has_chinese_number(v):
                         if parse_chinese_number(v) is not None:
                             parseable += 1
                     else:
-                        # 純數字也算
                         try:
                             float(v)
                             parseable += 1
@@ -162,6 +160,7 @@ class SmartCleaner:
             'dates_fixed': 0,
             'currency_fixed': 0,
             'chinese_numbers_fixed': 0,
+            'unit_suffix_fixed': 0,
             'phones_fixed': 0,
             'emails_fixed': 0,
             'columns_cleaned': 0,
@@ -285,12 +284,11 @@ class SmartCleaner:
                 stats['dates_fixed'] = fixed
                 actions.append(f"✅ 轉換 {fixed} 個日期格式")
 
-        # 8-2. 中文數字轉換（新增：全欄掃描）
+        # 8-2. 中文數字轉換
         if options.get('normalize_chinese_number', True):
             cn_fixed = 0
             try:
                 for col in df_clean.columns:
-                    # 檢查該欄是否有中文數字
                     col_has_cn = False
                     for v in df_clean[col].dropna().astype(str):
                         if has_chinese_number(v):
@@ -299,7 +297,6 @@ class SmartCleaner:
                     if not col_has_cn:
                         continue
 
-                    # 逐值轉換
                     orig = df_clean[col].tolist()
                     conv = []
                     for v in orig:
@@ -319,7 +316,31 @@ class SmartCleaner:
                 pass
             if cn_fixed > 0:
                 stats['chinese_numbers_fixed'] = cn_fixed
-                actions.append(f"✅ 轉換 {cn_fixed} 個中文數字為阿拉伯數字")
+                actions.append(f"✅ 轉換 {cn_fixed} 個中文數字")
+
+        # 8-3. 單位尾綴移除（新增）
+        if options.get('strip_units', True):
+            unit_fixed = 0
+            try:
+                for col in df_clean.columns:
+                    orig = df_clean[col].tolist()
+                    conv = []
+                    for v in orig:
+                        if pd.isna(v):
+                            conv.append(v)
+                            continue
+                        s = str(v).strip()
+                        # 只處理包含「數字 + 單位」的情況
+                        new_v = strip_unit_suffix(s)
+                        if str(new_v) != s:
+                            unit_fixed += 1
+                        conv.append(new_v)
+                    df_clean[col] = conv
+            except Exception:
+                pass
+            if unit_fixed > 0:
+                stats['unit_suffix_fixed'] = unit_fixed
+                actions.append(f"✅ 移除 {unit_fixed} 個單位尾綴（分 / 級 / 歲…）")
 
         # 9. 貨幣
         if options.get('clean_currency', True):
