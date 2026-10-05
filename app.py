@@ -7,10 +7,10 @@ import streamlit as st
 from cleaner import SmartCleaner
 from loader import load_any_file, format_bytes, SINGLE_FILE_LIMIT, TOTAL_UPLOAD_LIMIT
 from templates import detect_template, suggest_column_mapping, TEMPLATES
-from merge import merge_files
-from report import build_clean_report, build_anomaly_table, build_total_check_table
+from merge import merge_files, detect_merge_strategy, suggest_join_key
+from report import build_clean_report
 from analytics import render_analytics
-from utils import build_dataframe, is_garbage_row, is_header_row
+from utils import build_dataframe
 from db import init_db, fetch_one, fetch_all, execute
 
 
@@ -70,12 +70,13 @@ st.sidebar.title("🧹 AI 資料清理工作台")
 client_page = None
 
 if not st.session_state['logged_in']:
-    nav = st.sidebar.radio("選擇身分", ["客戶登入", "客戶註冊", "管理員後台"])
+    nav = st.sidebar.radio("選擇身分", ["客戶登入", "客戶註冊", "管理員後台"],
+                          key="sidebar_nav")
 
     if nav == "客戶登入":
-        u = st.sidebar.text_input("帳號")
-        p = st.sidebar.text_input("密碼", type="password")
-        if st.sidebar.button("登入"):
+        u = st.sidebar.text_input("帳號", key="login_user")
+        p = st.sidebar.text_input("密碼", type="password", key="login_pass")
+        if st.sidebar.button("登入", key="login_btn"):
             if not u or not p:
                 st.sidebar.warning("請輸入帳號與密碼")
             else:
@@ -91,10 +92,10 @@ if not st.session_state['logged_in']:
                     st.sidebar.error("帳號或密碼錯誤")
 
     elif nav == "客戶註冊":
-        u = st.sidebar.text_input("設定帳號")
-        p = st.sidebar.text_input("設定密碼", type="password")
-        contact = st.sidebar.text_input("聯絡方式 (Line / Email / 電話)")
-        if st.sidebar.button("註冊"):
+        u = st.sidebar.text_input("設定帳號", key="reg_user")
+        p = st.sidebar.text_input("設定密碼", type="password", key="reg_pass")
+        contact = st.sidebar.text_input("聯絡方式 (Line / Email / 電話)", key="reg_contact")
+        if st.sidebar.button("註冊", key="reg_btn"):
             if not (u and p and contact):
                 st.sidebar.warning("請填寫所有欄位")
             else:
@@ -118,8 +119,8 @@ if not st.session_state['logged_in']:
                         st.sidebar.error(f"註冊失敗：{e}")
 
     elif nav == "管理員後台":
-        mp = st.sidebar.text_input("管理員密碼", type="password")
-        if st.sidebar.button("進入後台"):
+        mp = st.sidebar.text_input("管理員密碼", type="password", key="admin_pass")
+        if st.sidebar.button("進入後台", key="admin_btn"):
             if mp == MASTER_PASSWORD:
                 st.session_state.update(logged_in=True, user_role='admin', username='MasterAdmin')
                 st.rerun()
@@ -134,7 +135,7 @@ else:
             "功能選單", ["🧹 資料清理工作台", "💬 意見反饋"],
             key="client_nav_radio",
         )
-    if st.sidebar.button("登出"):
+    if st.sidebar.button("登出", key="logout_btn"):
         st.session_state.update(logged_in=False, user_role=None, username=None)
         st.rerun()
 
@@ -158,7 +159,7 @@ if not st.session_state['logged_in']:
 ### 💡 核心功能
 1. **AI 欄位識別** — 自動判斷 Email、手機、身分證、日期、金額等格式
 2. **總計自動重算** — 比對明細加總 vs 原始總計，發現差異立即警示
-3. **多檔合併** — 一次合併多個 Excel / CSV，自動標記重複
+3. **多檔合併** — 支援垂直堆疊 + 水平 JOIN（用共同欄位接表）
 4. **資料分析** — 分類圓餅圖、每月收支、付款方式分布
 5. **行業模板** — 自動認得記帳本、電商訂單、客戶名單等常見格式
 6. **隱私保護** — 資料僅在記憶體處理，密碼 bcrypt 雜湊儲存
@@ -237,6 +238,9 @@ elif st.session_state['user_role'] == 'admin':
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
 
+    # --------------------------------------------------------
+    # 4-A. 意見反饋
+    # --------------------------------------------------------
     if client_page == "💬 意見反饋":
         st.title("💬 意見反饋與客製化需求")
         st.markdown(f"""
@@ -265,6 +269,9 @@ elif st.session_state['user_role'] == 'client':
                     st.balloons()
         st.divider()
 
+    # --------------------------------------------------------
+    # 4-B. 資料清理工作台
+    # --------------------------------------------------------
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
@@ -493,7 +500,7 @@ elif st.session_state['user_role'] == 'client':
                         st.caption("🔒 所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
 
         # ====================================================
-        # Tab 2：多檔合併
+        # Tab 2：多檔合併（支援垂直堆疊 + 水平 JOIN）
         # ====================================================
         with tab2:
             st.subheader("🔗 多檔合併")
@@ -505,7 +512,7 @@ elif st.session_state['user_role'] == 'client':
             )
 
             if not uploaded_files:
-                st.info("👆 上傳多個檔案後，系統會自動清理並合併。")
+                st.info("👆 上傳多個檔案後，系統會自動偵測合併策略。")
             else:
                 total_size = 0
                 for f in uploaded_files:
@@ -514,27 +521,12 @@ elif st.session_state['user_role'] == 'client':
                     except Exception:
                         pass
                 if total_size > TOTAL_UPLOAD_LIMIT:
-                    st.warning(f"⚠️ 總上傳大小 {format_bytes(total_size)} 超過 200MB，建議分批處理")
+                    st.warning(f"⚠️ 總上傳大小 {format_bytes(total_size)} 超過 200MB")
 
-                with st.expander("⚙️ 合併選項", expanded=True):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        merge_mode = st.radio("合併模式",
-                                              ["寬鬆（聯集所有欄位）", "嚴格（只保留共同欄位）"],
-                                              index=0,
-                                              key="merge_mode_radio")
-                    with col2:
-                        opt_keep_source = st.checkbox("保留「來源檔案」欄位", value=True, key="merge_keep")
-                        opt_flag_dup = st.checkbox("標記疑似重複", value=True, key="merge_flag")
-
-                if st.button("🚀 開始合併", type="primary", key="merge_btn"):
-                    progress = st.progress(0)
-                    status = st.empty()
-
+                # 讀取所有檔案
+                with st.spinner("正在讀取所有檔案…"):
                     files_data = []
-                    for i, f in enumerate(uploaded_files):
-                        status.text(f"正在讀取第 {i+1} 個檔案，共 {len(uploaded_files)} 個…")
-                        progress.progress(int((i+1) / len(uploaded_files) * 40))
+                    for f in uploaded_files:
                         df_raw, err = load_any_file(f)
                         if df_raw is None:
                             st.warning(f"跳過 {f.name}：{err}")
@@ -545,47 +537,172 @@ elif st.session_state['user_role'] == 'client':
                         except Exception as e:
                             st.warning(f"跳過 {f.name}：{e}")
 
-                    if not files_data:
-                        st.error("沒有可處理的檔案")
-                        st.stop()
+                if not files_data:
+                    st.error("沒有可處理的檔案")
+                else:
+                    # ============================================
+                    # 偵測合併策略
+                    # ============================================
+                    strategy_info = detect_merge_strategy(files_data)
 
-                    status.text("正在清理並合併…")
-                    progress.progress(70)
+                    # 顯示每個檔案的欄位
+                    with st.expander("📋 各檔案欄位一覽", expanded=False):
+                        for name, cols in strategy_info['all_cols'].items():
+                            st.write(f"**{name}**：{', '.join(cols)}")
 
-                    mode = 'strict' if '嚴格' in merge_mode else 'loose'
-                    result = merge_files(files_data, {
-                        'mode': mode,
-                        'flag_duplicates': opt_flag_dup,
-                        'keep_source': opt_keep_source,
-                    })
-
-                    progress.progress(100)
-                    status.empty()
-
-                    if result.get('error'):
-                        st.error(f"合併失敗：{result['error']}")
+                    # 顯示策略
+                    if strategy_info['strategy'] == 'stack':
+                        st.success(f"✅ **建議：垂直堆疊**（{strategy_info['reason']}）")
+                        default_mode = 'stack'
+                    elif strategy_info['strategy'] == 'ask':
+                        st.info(f"❓ **偵測到可 JOIN**（{strategy_info['reason']}）")
+                        default_mode = 'join'
                     else:
-                        merged = result['merged_df']
-                        stats = result['stats']
-                        st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
+                        default_mode = 'stack'
 
-                        st.markdown("---")
-                        col_a, col_b = st.columns(2)
-                        csv_bytes = merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-                        with col_a:
-                            st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
-                                              "text/csv", use_container_width=True, type="primary",
-                                              key="merge_dl_csv")
+                    # ============================================
+                    # 合併選項
+                    # ============================================
+                    with st.expander("⚙️ 合併選項", expanded=True):
+                        mode_options = ["垂直堆疊（上下接起來）", "水平關聯（用共同欄位接起來）"]
+                        default_idx = 1 if default_mode == 'join' else 0
+                        merge_mode = st.radio(
+                            "合併方式",
+                            mode_options,
+                            index=default_idx,
+                            key="merge_mode_radio",
+                        )
 
-                        excel_buffer = io.BytesIO()
-                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            merged.to_excel(writer, index=False, sheet_name='合併明細')
-                            pd.DataFrame([stats]).T.reset_index().rename(
-                                columns={'index': '項目', 0: '值'}
-                            ).to_excel(writer, index=False, sheet_name='合併統計')
-                            if result.get('anomalies'):
-                                pd.DataFrame(result['anomalies']).to_excel(
-                                    writer, index=False, sheet_name='異常清單')
+                        use_join = "水平關聯" in merge_mode
+
+                        if use_join:
+                            if not strategy_info['common_cols']:
+                                st.warning("⚠️ 沒有偵測到共同欄位，無法 JOIN。將改用垂直堆疊。")
+                                use_join = False
+                            else:
+                                suggested_key = suggest_join_key(files_data, strategy_info['common_cols'])
+                                join_key = st.selectbox(
+                                    "JOIN 用的共同欄位",
+                                    strategy_info['common_cols'],
+                                    index=strategy_info['common_cols'].index(suggested_key) if suggested_key in strategy_info['common_cols'] else 0,
+                                    key="merge_join_key",
+                                )
+
+                                join_type_label = st.radio(
+                                    "JOIN 類型",
+                                    ["LEFT JOIN（保留左邊全部）",
+                                     "INNER JOIN（只保留兩邊都有的）",
+                                     "RIGHT JOIN（保留右邊全部）",
+                                     "FULL OUTER JOIN（兩邊都保留）"],
+                                    index=0,
+                                    key="merge_join_type",
+                                )
+                                join_type_map = {
+                                    "LEFT JOIN（保留左邊全部）": "left",
+                                    "INNER JOIN（只保留兩邊都有的）": "inner",
+                                    "RIGHT JOIN（保留右邊全部）": "right",
+                                    "FULL OUTER JOIN（兩邊都保留）": "outer",
+                                }
+                                join_type = join_type_map[join_type_label]
+
+                                base_file = st.selectbox(
+                                    "以哪個檔案為基準（LEFT/RIGHT JOIN 用）",
+                                    [f['name'] for f in files_data],
+                                    index=0,
+                                    key="merge_base_file",
+                                )
+
+                                st.caption(f"💡 將用「{join_key}」欄位，以「{base_file}」為基準做 {join_type.upper()} JOIN")
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            opt_flag_dup = st.checkbox("標記疑似重複", value=True, key="merge_flag")
+                        with col2:
+                            if use_join:
+                                opt_keep_source = True
+                                st.caption("✅ JOIN 模式自動保留來源資訊")
+                            else:
+                                opt_keep_source = st.checkbox("保留「來源檔案」欄位", value=True, key="merge_keep")
+
+                    # ============================================
+                    # 執行合併
+                    # ============================================
+                    if st.button("🚀 開始合併", type="primary", key="merge_btn"):
+                        progress = st.progress(0)
+                        status = st.empty()
+
+                        status.text("步驟 1/2：清理各檔案中…")
+                        progress.progress(40)
+
+                        merge_options = {
+                            'mode': 'join' if use_join else 'stack',
+                            'flag_duplicates': opt_flag_dup,
+                            'keep_source': opt_keep_source,
+                        }
+                        if use_join:
+                            merge_options['join_type'] = join_type
+                            merge_options['join_key'] = join_key
+                            merge_options['base_file'] = base_file
+
+                        result = merge_files(files_data, merge_options)
+
+                        status.text("步驟 2/2：產生報告中…")
+                        progress.progress(100)
+                        status.empty()
+
+                        if result.get('error'):
+                            st.error(f"合併失敗：{result['error']}")
+                        else:
+                            merged = result['merged_df']
+                            stats = result['stats']
+                            st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
+
+                            # 下載
+                            st.markdown("---")
+                            col_a, col_b = st.columns(2)
+                            csv_bytes = merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                            with col_a:
+                                st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
+                                                  "text/csv", use_container_width=True, type="primary",
+                                                  key="merge_dl_csv")
+
+                            excel_buffer = io.BytesIO()
+                            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                                merged.to_excel(writer, index=False, sheet_name='合併明細')
+                                pd.DataFrame([stats]).T.reset_index().rename(
+                                    columns={'index': '項目', 0: '值'}
+                                ).to_excel(writer, index=False, sheet_name='合併統計')
+                                if result.get('anomalies'):
+                                    pd.DataFrame(result['anomalies']).to_excel(
+                                        writer, index=False, sheet_name='異常清單')
+                                total_rows = []
+                                for info in result['files_info']:
+                                    for tc in info.get('total_check', []):
+                                        total_rows.append({
+                                            '檔案': info['file'],
+                                            '欄位': tc['column'],
+                                            '明細加總': tc['calculated_value'],
+                                            '原始總計': tc['summary_value'],
+                                            '差額': tc['difference'],
+                                        })
+                                if total_rows:
+                                    pd.DataFrame(total_rows).to_excel(writer, index=False, sheet_name='原始總計比對')
+                            excel_bytes = excel_buffer.getvalue()
+                            with col_b:
+                                st.download_button("📊 下載 Excel", excel_bytes, "merged.xlsx",
+                                                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                  use_container_width=True,
+                                                  key="merge_dl_xlsx")
+
+                            # 統計
+                            st.markdown("---")
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("檔案數", stats['files'])
+                            c2.metric("總列數", stats['total_rows'])
+                            c3.metric("移除空白", stats['removed_non_data'])
+                            c4.metric("移除總計", stats['removed_summary'])
+
+                            # 總計驗證
                             total_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
@@ -595,44 +712,18 @@ elif st.session_state['user_role'] == 'client':
                                         '明細加總': tc['calculated_value'],
                                         '原始總計': tc['summary_value'],
                                         '差額': tc['difference'],
+                                        '差額%': f"{abs(tc['difference']) / max(tc['calculated_value'],1) * 100:.2f}%",
                                     })
                             if total_rows:
-                                pd.DataFrame(total_rows).to_excel(writer, index=False, sheet_name='原始總計比對')
-                        excel_bytes = excel_buffer.getvalue()
-                        with col_b:
-                            st.download_button("📊 下載 Excel", excel_bytes, "merged.xlsx",
-                                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                              use_container_width=True,
-                                              key="merge_dl_xlsx")
+                                st.error("🚨 **總計不一致**")
+                                st.dataframe(pd.DataFrame(total_rows), use_container_width=True)
 
-                        st.markdown("---")
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("檔案數", stats['files'])
-                        c2.metric("總列數", stats['total_rows'])
-                        c3.metric("移除空白", stats['removed_non_data'])
-                        c4.metric("移除總計", stats['removed_summary'])
+                            with st.expander("📋 合併結果預覽", expanded=True):
+                                st.dataframe(merged.head(20), use_container_width=True)
 
-                        total_rows = []
-                        for info in result['files_info']:
-                            for tc in info.get('total_check', []):
-                                total_rows.append({
-                                    '檔案': info['file'],
-                                    '欄位': tc['column'],
-                                    '明細加總': tc['calculated_value'],
-                                    '原始總計': tc['summary_value'],
-                                    '差額': tc['difference'],
-                                    '差額%': f"{abs(tc['difference']) / max(tc['calculated_value'],1) * 100:.2f}%",
-                                })
-                        if total_rows:
-                            st.error("🚨 **總計不一致**")
-                            st.dataframe(pd.DataFrame(total_rows), use_container_width=True)
-
-                        with st.expander("📋 合併結果預覽", expanded=True):
-                            st.dataframe(merged.head(20), use_container_width=True)
-
-                        if result.get('anomalies'):
-                            with st.expander("⚠️ 異常清單", expanded=False):
-                                st.dataframe(pd.DataFrame(result['anomalies']), use_container_width=True)
+                            if result.get('anomalies'):
+                                with st.expander("⚠️ 異常清單", expanded=False):
+                                    st.dataframe(pd.DataFrame(result['anomalies']), use_container_width=True)
 
         # ====================================================
         # Tab 3：資料分析
@@ -672,6 +763,7 @@ elif st.session_state['user_role'] == 'client':
                     st.caption(f"📊 讀取結果：{len(df_a)} 列 × {len(df_a.columns)} 欄")
                     render_analytics(df_a)
 
+        # ---------- 檔案歷史 ----------
         if st.session_state.get('history'):
             with st.sidebar.expander("📜 最近處理紀錄", expanded=False):
                 for h in st.session_state['history']:
