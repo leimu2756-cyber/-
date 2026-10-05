@@ -41,28 +41,50 @@ SUMMARY_KEYWORDS = [
 
 
 def parse_chinese_number(text):
+    """
+    中文數字 → 阿拉伯數字
+    支援：
+      - 純中文（二十、一百二十三、參拾伍萬）
+      - 混合格式（九十9、9十、一百2十）
+      - 純阿拉伯數字
+    """
     if text is None:
         return None
     s = str(text).strip()
     if not s:
         return None
+
+    # 去掉尾綴
     for suf in CN_SUFFIXES:
         if s.endswith(suf):
             s = s[:-len(suf)].strip()
             break
+
     if not s:
         return None
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    total = section = current = 0
+
+    total = 0
+    section = 0
+    current = 0
     has_any = False
+    num_buffer = ''
+
+    def flush_num_buffer():
+        nonlocal total, num_buffer
+        if num_buffer:
+            try:
+                total += int(num_buffer)
+            except ValueError:
+                pass
+            num_buffer = ''
+
     for ch in s:
         if ch in CN_NUM:
+            flush_num_buffer()
             current = CN_NUM[ch]
             has_any = True
         elif ch in CN_UNIT:
+            flush_num_buffer()
             unit = CN_UNIT[ch]
             has_any = True
             if unit >= 10000:
@@ -75,11 +97,29 @@ def parse_chinese_number(text):
                     current = 1
                 section += current * unit
                 current = 0
+        elif ch.isdigit():
+            num_buffer += ch
+            has_any = True
+        elif ch in '., ':
+            continue
         else:
+            # 遇到無法辨識的字元 → 放棄（避免誤傷「一箱」、「第一天」）
             return None
+
+    flush_num_buffer()
+
     if not has_any:
         return None
+
     return float(total + section + current)
+
+
+def has_chinese_number(text):
+    """判斷字串是否含中文數字成分"""
+    if text is None or pd.isna(text):
+        return False
+    s = str(text)
+    return any(ch in CN_NUM or ch in CN_UNIT for ch in s)
 
 
 def to_halfwidth(value):
@@ -159,11 +199,13 @@ def clean_currency_value(value):
     if s == '' or s.lower() == 'nan':
         return np.nan
 
-    if any(ind in s for ind in CN_MONEY_INDICATORS):
+    # 中文數字（優先）
+    if has_chinese_number(s):
         parsed = parse_chinese_number(s)
         if parsed is not None:
             return parsed
 
+    # 會計負數 (8)
     m = re.match(r'^\(([\d,\.]+)\)$', s)
     if m:
         try:
@@ -227,11 +269,7 @@ def format_bytes(size):
     return f"{size:.1f} TB"
 
 
-# ==========================================================
-# 標題 / 垃圾行偵測（從 app.py 移過來）
-# ==========================================================
 def is_garbage_row(row):
-    """判斷是否為垃圾行"""
     try:
         row_str = ' '.join(str(v) for v in row.values if pd.notna(v))
     except Exception:
@@ -246,7 +284,6 @@ def is_garbage_row(row):
 
 
 def is_header_row(row):
-    """判斷是否像表頭"""
     try:
         vals = list(row.values)
     except Exception:
@@ -269,17 +306,10 @@ def is_header_row(row):
 
 
 def build_dataframe(df_raw, skip_n=0, header_n=0, auto_mode=True):
-    """
-    從原始 DataFrame 建立最終 DataFrame
-    - skip_n: 跳過前幾行
-    - header_n: 手動模式下第幾行是標題（-1 = 無標題）
-    - auto_mode: 自動偵測
-    """
     if skip_n > 0:
         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
     if auto_mode:
-        # 移除垃圾行
         garbage_idx = [
             i for i in range(len(df_raw))
             if is_garbage_row(df_raw.iloc[i])
@@ -287,7 +317,6 @@ def build_dataframe(df_raw, skip_n=0, header_n=0, auto_mode=True):
         if garbage_idx:
             df_raw = df_raw.drop(index=garbage_idx).reset_index(drop=True)
 
-        # 從前 10 行找表頭
         header_idx = None
         for i in range(min(len(df_raw), 10)):
             if is_header_row(df_raw.iloc[i]):
