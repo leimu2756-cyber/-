@@ -697,10 +697,18 @@ elif st.session_state['user_role'] == 'client':
                             # 統計
                             st.markdown("---")
                             c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("檔案數", stats['files'])
-                            c2.metric("總列數", stats['total_rows'])
+                            c1.metric("來源檔案", stats['files'])
+                            c2.metric("合併後列數", stats.get('merged_rows', len(merged)))
                             c3.metric("移除空白", stats['removed_non_data'])
                             c4.metric("移除總計", stats['removed_summary'])
+
+                            # 各檔清理後列數明細
+                            per_file = stats.get('per_file_rows', {})
+                            if per_file:
+                                detail_parts = []
+                                for fname, rows in per_file.items():
+                                    detail_parts.append(f"{fname}：{rows} 列")
+                                st.caption("📊 各檔清理後：" + " ｜ ".join(detail_parts))
 
                             # 總計驗證
                             total_rows = []
