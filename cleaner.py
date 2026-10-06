@@ -7,6 +7,7 @@ from utils import (
     to_halfwidth, flatten_newlines, convert_minguo_to_western,
     clean_currency_value, validate_date, is_summary_row, is_non_data_row,
     parse_chinese_number, has_chinese_number, strip_unit_suffix,
+    normalize_phone, is_phone_like,
     EXCEL_ERRORS, NON_DATA_KEYWORDS, SUMMARY_KEYWORDS,
     CN_MONEY_INDICATORS,
 )
@@ -30,6 +31,7 @@ class SmartCleaner:
         'id_tw': '🆔 身分證號', 'tax_id_tw': '🏢 統一編號', 'date_str': '📅 日期（文字）',
         'url': '🔗 網址', 'currency': '💰 金額', 'number': '🔢 數值',
         'date': '📅 日期', 'text': '📝 文字', 'empty': '⬜ 空欄位',
+        'phone': '📞 電話',
     }
 
     @staticmethod
@@ -50,6 +52,14 @@ class SmartCleaner:
         s_str = s.astype(str).str.strip()
         if len(s_str) == 0:
             return 'empty'
+
+        # 電話（優先判斷，用寬鬆規則）
+        try:
+            phone_count = s_str.apply(is_phone_like).sum()
+            if phone_count / len(s_str) >= 0.6:
+                return 'phone'
+        except Exception:
+            pass
 
         # 中文數字 → 視為數字
         try:
@@ -251,21 +261,39 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 7. 文字 trim
+        # 7. 文字 trim（但電話欄位不 trim，避免變成數字）
         if options.get('trim_strings', True):
             touched = 0
             try:
                 for col in df_clean.select_dtypes(include=['object']).columns:
-                    df_clean[col] = (
-                        df_clean[col].astype(str).str.strip()
-                        .replace({'nan': np.nan, 'None': np.nan, '': np.nan})
-                    )
+                    # 判斷這欄是否為電話欄位
+                    is_phone_col = False
+                    try:
+                        sample = df_clean[col].dropna().astype(str).head(20)
+                        if len(sample) > 0:
+                            phone_count = sample.apply(is_phone_like).sum()
+                            if phone_count / len(sample) >= 0.5:
+                                is_phone_col = True
+                    except Exception:
+                        pass
+
+                    if is_phone_col:
+                        # 電話欄位：先 trim，再標準化，並保持字串
+                        df_clean[col] = df_clean[col].apply(
+                            lambda x: normalize_phone(x) if pd.notna(x) else x
+                        )
+                        stats['phones_fixed'] += 1
+                        actions.append(f"✅ 標準化「{col}」電話格式")
+                    else:
+                        df_clean[col] = (
+                            df_clean[col].astype(str).str.strip()
+                            .replace({'nan': np.nan, 'None': np.nan, '': np.nan})
+                        )
                     touched += 1
             except Exception:
                 pass
             if touched:
                 stats['columns_cleaned'] = touched
-                actions.append(f"✅ 清理 {touched} 個文字欄位頭尾空白")
 
         # 8. 日期
         if options.get('normalize_date', True):
@@ -318,7 +346,7 @@ class SmartCleaner:
                 stats['chinese_numbers_fixed'] = cn_fixed
                 actions.append(f"✅ 轉換 {cn_fixed} 個中文數字")
 
-        # 8-3. 單位尾綴移除（新增）
+        # 8-3. 單位尾綴移除
         if options.get('strip_units', True):
             unit_fixed = 0
             try:
@@ -330,7 +358,6 @@ class SmartCleaner:
                             conv.append(v)
                             continue
                         s = str(v).strip()
-                        # 只處理包含「數字 + 單位」的情況
                         new_v = strip_unit_suffix(s)
                         if str(new_v) != s:
                             unit_fixed += 1
@@ -363,22 +390,7 @@ class SmartCleaner:
                 stats['currency_fixed'] = fixed
                 actions.append(f"✅ 清理 {fixed} 個貨幣 / 中文數字")
 
-        # 10. 電話
-        if options.get('normalize_phone', True):
-            try:
-                for col in df_clean.columns:
-                    try:
-                        ctype = cls.detect_column_type(df_clean[col])
-                    except Exception:
-                        continue
-                    if ctype in ('phone_tw', 'mobile_tw'):
-                        df_clean[col] = df_clean[col].astype(str).str.replace(r'[-\s\(\)]', '', regex=True)
-                        stats['phones_fixed'] += 1
-                        actions.append(f"✅ 標準化「{col}」電話格式")
-            except Exception:
-                pass
-
-        # 11. Email
+        # 10. Email
         if options.get('normalize_email', True):
             try:
                 for col in df_clean.columns:
