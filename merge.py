@@ -5,16 +5,7 @@ from utils import is_summary_row
 
 
 def detect_merge_strategy(files):
-    """
-    偵測多個檔案該用哪種合併策略
-    回傳：
-      {
-        'strategy': 'stack' | 'join' | 'ask',
-        'common_cols': [...],
-        'all_cols': {檔名: [欄位...]},
-        'reason': '說明文字',
-      }
-    """
+    """偵測多個檔案該用哪種合併策略"""
     if not files or len(files) < 2:
         return {'strategy': 'stack', 'common_cols': [], 'all_cols': {}, 'reason': '只有一個檔案'}
 
@@ -84,16 +75,7 @@ def suggest_join_key(files, common_cols):
 
 
 def merge_files(files, options=None):
-    """
-    合併多個檔案
-    options:
-      - mode: 'stack'（垂直）或 'join'（水平）
-      - join_type: 'inner' | 'left' | 'right' | 'outer'
-      - join_key: 用哪個欄位當 key
-      - base_file: 基礎檔案名稱
-      - flag_duplicates: bool
-      - keep_source: bool
-    """
+    """合併多個檔案"""
     options = options or {}
     mode = options.get('mode', 'stack')
     flag_dup = options.get('flag_duplicates', False)
@@ -109,7 +91,8 @@ def merge_files(files, options=None):
     all_actions = []
     total_stats = {
         'files': 0,
-        'total_rows': 0,
+        'merged_rows': 0,          # 新增：合併後列數
+        'per_file_rows': {},        # 新增：每個檔案清理後列數
         'removed_non_data': 0,
         'removed_duplicates': 0,
         'removed_summary': 0,
@@ -157,7 +140,7 @@ def merge_files(files, options=None):
             ])
 
             total_stats['files'] += 1
-            total_stats['total_rows'] += len(df_clean)
+            total_stats['per_file_rows'][file_name] = len(df_clean)  # 新增
             total_stats['removed_non_data'] += stats['rows_removed_non_data']
             total_stats['removed_duplicates'] += stats['rows_removed_duplicate']
             total_stats['removed_summary'] += stats['rows_removed_summary']
@@ -181,6 +164,9 @@ def merge_files(files, options=None):
             merged_df = _stack_dataframes(cleaned_list, keep_source)
     except Exception as e:
         return {'error': f'合併失敗：{e}'}
+
+    # 合併後列數
+    total_stats['merged_rows'] = len(merged_df)
 
     # 第三步：標記重複
     if flag_dup:
