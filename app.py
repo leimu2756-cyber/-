@@ -17,7 +17,10 @@ from db import init_db, fetch_one, fetch_all, execute
 # ============================================================
 # 0. 設定
 # ============================================================
-MASTER_PASSWORD = '2012011220120629LryCsy'
+try:
+    MASTER_PASSWORD = st.secrets["MASTER_PASSWORD"]
+except Exception:
+    MASTER_PASSWORD = "fallback_change_me"
 ADMIN_EMAIL = '717804lin@gmail.com'
 
 ANNOUNCEMENT = {
