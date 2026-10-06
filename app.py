@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import bcrypt
 import pandas as pd
 import streamlit as st
@@ -17,10 +18,6 @@ from db import init_db, fetch_one, fetch_all, execute
 # ============================================================
 # 0. 設定
 # ============================================================
-try:
-    MASTER_PASSWORD = st.secrets["MASTER_PASSWORD"]
-except Exception:
-    MASTER_PASSWORD = "fallback_change_me"
 ADMIN_EMAIL = '717804lin@gmail.com'
 
 ANNOUNCEMENT = {
@@ -45,6 +42,12 @@ st.set_page_config(
     layout="wide",
 )
 
+# 從 Secrets 讀取管理員密碼
+try:
+    MASTER_PASSWORD = st.secrets["MASTER_PASSWORD"]
+except Exception:
+    MASTER_PASSWORD = "fallback_change_me"
+
 st.markdown("""
 <style>
     [data-testid="stToolbar"] { display: none !important; }
@@ -60,10 +63,23 @@ try:
 except Exception as e:
     st.warning(f"⚠️ 資料庫連線異常：{e}")
 
+# Session 逾時設定（30 分鐘）
+SESSION_TIMEOUT = 30 * 60
+
 for key, default in [('logged_in', False), ('user_role', None), ('username', None),
-                     ('history', [])]:
+                     ('history', []), ('last_activity', time.time())]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+# 檢查逾時
+if st.session_state['logged_in']:
+    now = time.time()
+    if now - st.session_state.get('last_activity', now) > SESSION_TIMEOUT:
+        st.session_state.update(logged_in=False, user_role=None, username=None)
+        st.warning("⏰ 閒置超過 30 分鐘，已自動登出。")
+        st.rerun()
+    else:
+        st.session_state['last_activity'] = now
 
 
 # ============================================================
@@ -89,7 +105,10 @@ if not st.session_state['logged_in']:
                     st.sidebar.error(f"資料庫連線失敗：{e}")
                     row = None
                 if row and bcrypt.checkpw(p.encode('utf-8'), row[0].encode('utf-8')):
-                    st.session_state.update(logged_in=True, user_role='client', username=u)
+                    st.session_state.update(
+                        logged_in=True, user_role='client', username=u,
+                        last_activity=time.time(),
+                    )
                     st.rerun()
                 else:
                     st.sidebar.error("帳號或密碼錯誤")
@@ -101,6 +120,8 @@ if not st.session_state['logged_in']:
         if st.sidebar.button("註冊", key="reg_btn"):
             if not (u and p and contact):
                 st.sidebar.warning("請填寫所有欄位")
+            elif len(p) < 8:
+                st.sidebar.warning("密碼至少 8 個字元")
             else:
                 try:
                     existing = fetch_one("SELECT username FROM users WHERE username = :u", {"u": u})
@@ -125,7 +146,10 @@ if not st.session_state['logged_in']:
         mp = st.sidebar.text_input("管理員密碼", type="password", key="admin_pass")
         if st.sidebar.button("進入後台", key="admin_btn"):
             if mp == MASTER_PASSWORD:
-                st.session_state.update(logged_in=True, user_role='admin', username='MasterAdmin')
+                st.session_state.update(
+                    logged_in=True, user_role='admin', username='MasterAdmin',
+                    last_activity=time.time(),
+                )
                 st.rerun()
             else:
                 st.sidebar.error("密碼錯誤")
@@ -170,6 +194,33 @@ if not st.session_state['logged_in']:
 ### 📮 需要客製化服務？
 直接來信：[{ADMIN_EMAIL}](mailto:{ADMIN_EMAIL})
 """)
+
+    st.divider()
+    st.markdown("""
+### 🔒 隱私政策
+
+**1. 檔案處理**
+所有上傳的檔案僅在伺服器記憶體中處理，**不會寫入硬碟**。處理完成後，暫存資料立即銷毀。
+
+**2. 資料儲存**
+我們只儲存您的帳號、密碼（bcrypt 雜湊）、聯絡方式。**不會儲存任何您上傳的檔案內容。**
+
+**3. 密碼安全**
+您的密碼以 bcrypt 雜湊儲存，**連管理員也無法看到原始密碼**。
+
+**4. 第三方分享**
+我們**不會**將您的資料分享給任何第三方。
+
+**5. 資料刪除**
+您可以隨時來信要求刪除您的帳號與所有相關資料。
+
+**6. 傳輸加密**
+所有資料透過 HTTPS 加密傳輸，資料庫連線使用 SSL。
+
+**7. 登入安全**
+閒置超過 30 分鐘會自動登出，保護您的帳號安全。
+
+若有任何隱私相關問題，請來信：""" + ADMIN_EMAIL)
 
 
 # ============================================================
@@ -503,7 +554,7 @@ elif st.session_state['user_role'] == 'client':
                         st.caption("🔒 所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
 
         # ====================================================
-        # Tab 2：多檔合併（支援垂直堆疊 + 水平 JOIN）
+        # Tab 2：多檔合併
         # ====================================================
         with tab2:
             st.subheader("🔗 多檔合併")
@@ -526,7 +577,6 @@ elif st.session_state['user_role'] == 'client':
                 if total_size > TOTAL_UPLOAD_LIMIT:
                     st.warning(f"⚠️ 總上傳大小 {format_bytes(total_size)} 超過 200MB")
 
-                # 讀取所有檔案
                 with st.spinner("正在讀取所有檔案…"):
                     files_data = []
                     for f in uploaded_files:
@@ -543,17 +593,12 @@ elif st.session_state['user_role'] == 'client':
                 if not files_data:
                     st.error("沒有可處理的檔案")
                 else:
-                    # ============================================
-                    # 偵測合併策略
-                    # ============================================
                     strategy_info = detect_merge_strategy(files_data)
 
-                    # 顯示每個檔案的欄位
                     with st.expander("📋 各檔案欄位一覽", expanded=False):
                         for name, cols in strategy_info['all_cols'].items():
                             st.write(f"**{name}**：{', '.join(cols)}")
 
-                    # 顯示策略
                     if strategy_info['strategy'] == 'stack':
                         st.success(f"✅ **建議：垂直堆疊**（{strategy_info['reason']}）")
                         default_mode = 'stack'
@@ -563,9 +608,6 @@ elif st.session_state['user_role'] == 'client':
                     else:
                         default_mode = 'stack'
 
-                    # ============================================
-                    # 合併選項
-                    # ============================================
                     with st.expander("⚙️ 合併選項", expanded=True):
                         mode_options = ["垂直堆疊（上下接起來）", "水平關聯（用共同欄位接起來）"]
                         default_idx = 1 if default_mode == 'join' else 0
@@ -627,9 +669,6 @@ elif st.session_state['user_role'] == 'client':
                             else:
                                 opt_keep_source = st.checkbox("保留「來源檔案」欄位", value=True, key="merge_keep")
 
-                    # ============================================
-                    # 執行合併
-                    # ============================================
                     if st.button("🚀 開始合併", type="primary", key="merge_btn"):
                         progress = st.progress(0)
                         status = st.empty()
@@ -660,7 +699,6 @@ elif st.session_state['user_role'] == 'client':
                             stats = result['stats']
                             st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
 
-                            # 下載
                             st.markdown("---")
                             col_a, col_b = st.columns(2)
                             csv_bytes = merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
@@ -697,7 +735,6 @@ elif st.session_state['user_role'] == 'client':
                                                   use_container_width=True,
                                                   key="merge_dl_xlsx")
 
-                            # 統計
                             st.markdown("---")
                             c1, c2, c3, c4 = st.columns(4)
                             c1.metric("來源檔案", stats['files'])
@@ -705,7 +742,6 @@ elif st.session_state['user_role'] == 'client':
                             c3.metric("移除空白", stats['removed_non_data'])
                             c4.metric("移除總計", stats['removed_summary'])
 
-                            # 各檔清理後列數明細
                             per_file = stats.get('per_file_rows', {})
                             if per_file:
                                 detail_parts = []
@@ -713,7 +749,6 @@ elif st.session_state['user_role'] == 'client':
                                     detail_parts.append(f"{fname}：{rows} 列")
                                 st.caption("📊 各檔清理後：" + " ｜ ".join(detail_parts))
 
-                            # 總計驗證
                             total_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
@@ -774,7 +809,6 @@ elif st.session_state['user_role'] == 'client':
                     st.caption(f"📊 讀取結果：{len(df_a)} 列 × {len(df_a.columns)} 欄")
                     render_analytics(df_a)
 
-        # ---------- 檔案歷史 ----------
         if st.session_state.get('history'):
             with st.sidebar.expander("📜 最近處理紀錄", expanded=False):
                 for h in st.session_state['history']:
