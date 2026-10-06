@@ -39,28 +39,23 @@ SUMMARY_KEYWORDS = [
     'Total', 'Subtotal', 'Sum', 'Grand Total',
 ]
 
-# 單位尾綴（移除這些字，前面的數字就是答案）
 UNIT_SUFFIXES = ['分', '級', '级', '歲', '岁', '個', '个', '件', '顆', '颗',
                  '元', '塊', '块', '張', '张', '台', '組', '组', '人',
                  '次', '筆', '笔', '年', '月', '日', '小時', '小时']
 
 
 def parse_chinese_number(text):
-    """中文數字 → 阿拉伯數字（支援混合格式）"""
     if text is None:
         return None
     s = str(text).strip()
     if not s:
         return None
-
     for suf in CN_SUFFIXES:
         if s.endswith(suf):
             s = s[:-len(suf)].strip()
             break
-
     if not s:
         return None
-
     total = 0
     section = 0
     current = 0
@@ -102,54 +97,35 @@ def parse_chinese_number(text):
             continue
         else:
             return None
-
     flush_num_buffer()
-
     if not has_any:
         return None
-
     return float(total + section + current)
 
 
 def strip_unit_suffix(value):
-    """
-    移除單位尾綴，回傳數字
-    例如：
-      '89分'    → 89.0
-      '六級'    → 6.0
-      '11級'    → 11.0
-      '十五歲'  → 15.0
-    若無法解析，回傳原值
-    """
     if pd.isna(value):
         return value
-
     s = str(value).strip()
     if not s:
         return value
-
-    # 先嘗試：阿拉伯數字 + 單位
     for suf in UNIT_SUFFIXES:
         if s.endswith(suf):
             inner = s[:-len(suf)].strip()
             if not inner:
                 continue
-            # 純數字
             try:
                 return float(inner)
             except ValueError:
                 pass
-            # 中文數字
             parsed = parse_chinese_number(inner)
             if parsed is not None:
                 return parsed
-            return value  # 有其他字元就不處理
-
+            return value
     return value
 
 
 def has_chinese_number(text):
-    """判斷字串是否含中文數字成分"""
     if text is None or pd.isna(text):
         return False
     s = str(text)
@@ -232,19 +208,16 @@ def clean_currency_value(value):
     s = str(value).strip()
     if s == '' or s.lower() == 'nan':
         return np.nan
-
     if has_chinese_number(s):
         parsed = parse_chinese_number(s)
         if parsed is not None:
             return parsed
-
     m = re.match(r'^\(([\d,\.]+)\)$', s)
     if m:
         try:
             return -float(m.group(1).replace(',', ''))
         except ValueError:
             return value
-
     cleaned = s
     for token in ['NT$', 'NT', 'nt$', 'nt', '$', ',', ' ', '元', '　']:
         cleaned = cleaned.replace(token, '')
@@ -254,6 +227,48 @@ def clean_currency_value(value):
         return float(cleaned)
     except ValueError:
         return value
+
+
+def normalize_phone(value):
+    """
+    電話標準化：移除所有非數字字元（保留開頭 0），回傳字串
+    """
+    if pd.isna(value):
+        return value
+    s = str(value).strip()
+    if not s:
+        return value
+    # 只保留數字
+    digits = re.sub(r'\D', '', s)
+    if not digits:
+        return value
+    # 若開頭不是 0，且長度是 9（例如 922333444），補回 0
+    if not digits.startswith('0') and len(digits) == 9:
+        digits = '0' + digits
+    return digits
+
+
+def is_phone_like(value):
+    """判斷一個值是否像電話號碼"""
+    if pd.isna(value):
+        return False
+    s = str(value).strip()
+    if not s:
+        return False
+    # 只保留數字
+    digits = re.sub(r'\D', '', s)
+    if len(digits) < 8 or len(digits) > 11:
+        return False
+    # 手機：09 開頭，共 10 碼
+    if re.match(r'^09\d{8}$', digits):
+        return True
+    # 市話：0 開頭，共 9~10 碼
+    if re.match(r'^0\d{7,9}$', digits):
+        return True
+    # 9 碼（開頭被吃掉的手機，例如 922333444）
+    if re.match(r'^9\d{8}$', digits):
+        return True
+    return False
 
 
 def is_summary_row(row):
