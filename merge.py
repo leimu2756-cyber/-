@@ -134,11 +134,8 @@ def merge_files(files, options=None):
                 'total_check': total_check,
             })
             all_actions.extend([f"[{file_name}] {a}" for a in actions])
-            all_anomalies.extend([
-                {'來源檔案': file_name, **a}
-                for a in SmartCleaner.detect_anomalies(df_clean)
-            ])
-
+            for a in SmartCleaner.detect_anomalies(df_clean, source_name=file_name):
+                all_anomalies.append(a)
             total_stats['files'] += 1
             total_stats['per_file_rows'][file_name] = len(df_clean)  # 新增
             total_stats['removed_non_data'] += stats['rows_removed_non_data']
