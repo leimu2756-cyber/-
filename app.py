@@ -441,7 +441,8 @@ elif st.session_state['user_role'] == 'client':
                             quality_before = SmartCleaner.quality_score(df)
                             quality_after = SmartCleaner.quality_score(df_clean)
                             report_df = SmartCleaner.analyze_dataframe(df_clean)
-                            anomalies = SmartCleaner.detect_anomalies(df_clean)
+                            # 傳入檔名，異常清單才會顯示「來源檔案」
+                            anomalies = SmartCleaner.detect_anomalies(df_clean, source_name=uploaded_file.name)
                         except Exception as e:
                             st.error(f"清理失敗：{e}")
                             st.stop()
@@ -475,6 +476,8 @@ elif st.session_state['user_role'] == 'client':
                                               use_container_width=True, type="primary",
                                               key="single_dl_csv")
 
+                        from report import build_invalid_date_table
+
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                             df_clean.to_excel(writer, index=False, sheet_name='清理後')
@@ -485,6 +488,12 @@ elif st.session_state['user_role'] == 'client':
                                     writer, index=False, sheet_name='欄位報告')
                             if anomalies:
                                 pd.DataFrame(anomalies).to_excel(writer, index=False, sheet_name='異常')
+                            # 新增：無效日期明細
+                            invalid_dates = stats.get('invalid_dates', [])
+                            if invalid_dates:
+                                inv_df = build_invalid_date_table(invalid_dates)
+                                if len(inv_df) > 0:
+                                    inv_df.to_excel(writer, index=False, sheet_name='無效日期')
                         excel_bytes = excel_buffer.getvalue()
                         with col_b:
                             st.download_button("📊 下載 Excel", excel_bytes,
@@ -516,6 +525,14 @@ elif st.session_state['user_role'] == 'client':
                             else:
                                 st.info("沒有需要處理的地方。")
 
+                            # 無效日期明細
+                            invalid_dates = stats.get('invalid_dates', [])
+                            if invalid_dates:
+                                st.warning(f"⚠️ 發現 {len(invalid_dates)} 筆無效日期")
+                                from report import build_invalid_date_table
+                                inv_df = build_invalid_date_table(invalid_dates)
+                                if len(inv_df) > 0:
+                                    st.dataframe(inv_df, use_container_width=True, hide_index=True)
                         with st.expander("🔍 清理前後對比（前 10 筆）", expanded=False):
                             st.markdown("**清理前**")
                             st.dataframe(df.head(10), use_container_width=True)
