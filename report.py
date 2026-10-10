@@ -3,11 +3,21 @@ import pandas as pd
 
 
 def build_clean_report(stats, total_check=None, template_info=None):
-    """建立清理報告 DataFrame"""
+    """建立清理報告 DataFrame（依模式顯示不同項目）"""
     invalid_dates = stats.get('invalid_dates', [])
+    dup_mode = stats.get('duplicate_mode', 'mark')
+
+    # 根據模式決定重複項目的標題
+    if dup_mode == 'drop':
+        dup_label = "自動去重合併"
+        dup_count = stats.get('duplicates_dropped', 0)
+    else:
+        dup_label = "發現疑似重複"
+        dup_count = stats.get('duplicates_flagged', 0)
+
     rows = [
         ("移除非資料列", stats.get('rows_removed_non_data', 0), "列"),
-        ("發現疑似重複", stats.get('duplicates_flagged', 0), "列"),
+        (dup_label, dup_count, "列"),
         ("移除彙總列", stats.get('rows_removed_summary', 0), "列"),
         ("Excel 錯誤值清理", stats.get('excel_errors_fixed', 0), "個"),
         ("全形轉半形", stats.get('cells_halfwidth', 0), "格"),
