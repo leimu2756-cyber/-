@@ -7,7 +7,6 @@ def build_clean_report(stats, total_check=None, template_info=None):
     invalid_dates = stats.get('invalid_dates', [])
     dup_mode = stats.get('duplicate_mode', 'mark')
 
-    # 根據模式決定重複項目的標題
     if dup_mode == 'drop':
         dup_label = "自動去重合併"
         dup_count = stats.get('duplicates_dropped', 0)
@@ -32,6 +31,82 @@ def build_clean_report(stats, total_check=None, template_info=None):
     df = pd.DataFrame(rows, columns=["項目", "數量", "單位"])
     df = df[df["數量"] > 0]
     return df
+
+
+def build_summary_rows(df_clean, total_check):
+    """
+    建立彙總列（附加在明細下方，不混入資料區）
+    回傳 4 列：1 個分隔列 + 原始總計 / 重算總計 / 差異
+    """
+    if not total_check or df_clean is None or len(df_clean.columns) == 0:
+        return None
+
+    cols = list(df_clean.columns)
+    empty = {c: '' for c in cols}
+
+    # 決定標籤欄位（優先「項目」，其次「備註」，最後第一欄）
+    label_col = None
+    for candidate in ['項目', '項目名稱', '品項', '備註', '說明', '產品', '商品', '名稱']:
+        if candidate in cols:
+            label_col = candidate
+            break
+    if label_col is None:
+        label_col = cols[0]
+
+    rows = []
+    # 分隔列（全空）
+    rows.append(empty.copy())
+
+    multi = len(total_check) > 1
+
+    for item in total_check:
+        col_name = item.get('column', '')
+        original = item.get('summary_value', 0)
+        recalc = item.get('calculated_value', 0)
+        diff = item.get('difference', 0)
+
+        suffix = f'（{col_name}）' if multi else ''
+
+        # 原始總計
+        r = empty.copy()
+        r[label_col] = f'原始總計{suffix}'
+        if col_name in cols:
+            r[col_name] = original
+        rows.append(r)
+
+        # 重算總計
+        r = empty.copy()
+        r[label_col] = f'重算總計{suffix}'
+        if col_name in cols:
+            r[col_name] = recalc
+        rows.append(r)
+
+        # 差異
+        r = empty.copy()
+        r[label_col] = f'差異{suffix}'
+        if col_name in cols:
+            if diff > 0:
+                r[col_name] = f'+{diff}'
+            else:
+                r[col_name] = str(diff)
+        rows.append(r)
+
+    return pd.DataFrame(rows, columns=cols)
+
+
+def build_total_summary_table(total_check):
+    """建立總計摘要表（顯示在清理報告區塊）"""
+    if not total_check:
+        return pd.DataFrame()
+    rows = []
+    for item in total_check:
+        rows.append({
+            '欄位': item.get('column', ''),
+            '原始總計': item.get('summary_value', 0),
+            '重算總計': item.get('calculated_value', 0),
+            '差異': item.get('difference', 0),
+        })
+    return pd.DataFrame(rows)
 
 
 def build_invalid_date_table(invalid_dates):
