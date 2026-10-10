@@ -87,25 +87,24 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 工具函式：匯出前把整數值的 float 轉回 int
+# 工具函式
 # ============================================================
-def clean_float_for_export(df):
-    """
-    匯出前處理：
-    - 整欄都是「整數值」的 float 欄位 → 轉成 int（保持 NaN）
-    - 有小數的欄位不動
-    """
-    if df is None or len(df) == 0:
-        return df
+def to_csv_bytes(df, **kwargs):
+    """統一的 CSV 匯出：使用 %g 讓整數不顯示小數點"""
+    return df.to_csv(
+        index=False, encoding='utf-8-sig', float_format='%g', **kwargs
+    ).encode('utf-8-sig')
+
+
+def to_excel_clean(df):
+    """Excel 匯出前把整數欄位轉成 Int64，避免顯示 .0"""
     df_out = df.copy()
     for col in df_out.columns:
         try:
             if df_out[col].dtype == 'float64':
                 non_na = df_out[col].dropna()
                 if len(non_na) > 0 and (non_na % 1 == 0).all():
-                    df_out[col] = df_out[col].apply(
-                        lambda x: int(x) if pd.notna(x) and float(x) == int(x) else x
-                    )
+                    df_out[col] = df_out[col].astype('Int64')
         except Exception:
             pass
     return df_out
@@ -314,7 +313,6 @@ elif st.session_state['user_role'] == 'admin':
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
 
-    # 4-A. 意見反饋
     if client_page == "💬 意見反饋":
         st.title("💬 意見反饋與客製化需求")
         st.markdown(f"""
@@ -343,7 +341,6 @@ elif st.session_state['user_role'] == 'client':
                     st.balloons()
         st.divider()
 
-    # 4-B. 資料清理工作台
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
@@ -487,7 +484,6 @@ elif st.session_state['user_role'] == 'client':
                         progress.progress(100)
                         status.empty()
 
-                        # 總計不一致警示
                         if total_check:
                             for item in total_check:
                                 col_name = item.get('column', '')
@@ -514,16 +510,12 @@ elif st.session_state['user_role'] == 'client':
                                         f"差異：`{diff_str}`"
                                     )
 
-                        # 建立下載用 DataFrame（附加彙總列）
                         download_df = df_clean.copy()
                         summary_rows = build_summary_rows(df_clean, total_check)
                         if summary_rows is not None and len(summary_rows) > 0:
                             download_df = pd.concat(
                                 [download_df, summary_rows], ignore_index=True
                             )
-
-                        # 匯出前把整數值的 float 轉回 int
-                        download_df_export = clean_float_for_export(download_df)
 
                         st.markdown("---")
                         st.markdown("## ✅ 清理完成！")
@@ -534,9 +526,7 @@ elif st.session_state['user_role'] == 'client':
                         col_a, col_b, col_c = st.columns(3)
                         base = os.path.splitext(uploaded_file.name)[0]
 
-                        csv_bytes = download_df_export.to_csv(
-                            index=False, encoding='utf-8-sig'
-                        ).encode('utf-8-sig')
+                        csv_bytes = to_csv_bytes(download_df)
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes,
                                               f"{base}_cleaned.csv", "text/csv",
@@ -545,9 +535,9 @@ elif st.session_state['user_role'] == 'client':
 
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            download_df_export.to_excel(writer, index=False, sheet_name='清理後')
+                            to_excel_clean(download_df).to_excel(writer, index=False, sheet_name='清理後')
                             if summary_df is not None and len(summary_df) > 0:
-                                summary_df.to_excel(writer, index=False, sheet_name='原始總計')
+                                to_excel_clean(summary_df).to_excel(writer, index=False, sheet_name='原始總計')
                             if len(report_df) > 0:
                                 report_df.drop(columns=['_raw_type'], errors='ignore').to_excel(
                                     writer, index=False, sheet_name='欄位報告')
@@ -575,7 +565,7 @@ elif st.session_state['user_role'] == 'client':
                                               use_container_width=True,
                                               key="single_dl_xlsx")
 
-                        json_bytes = download_df_export.to_json(
+                        json_bytes = download_df.to_json(
                             orient='records', force_ascii=False, indent=2
                         ).encode('utf-8')
                         with col_c:
@@ -816,13 +806,11 @@ elif st.session_state['user_role'] == 'client':
                             merged = result['merged_df']
                             stats = result['stats']
 
-                            download_merged = clean_float_for_export(merged.copy())
-
                             st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
 
                             st.markdown("---")
                             col_a, col_b = st.columns(2)
-                            csv_bytes = download_merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                            csv_bytes = to_csv_bytes(merged)
                             with col_a:
                                 st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
                                                   "text/csv", use_container_width=True, type="primary",
@@ -830,7 +818,7 @@ elif st.session_state['user_role'] == 'client':
 
                             excel_buffer = io.BytesIO()
                             with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                                download_merged.to_excel(writer, index=False, sheet_name='合併明細')
+                                to_excel_clean(merged).to_excel(writer, index=False, sheet_name='合併明細')
                                 pd.DataFrame([stats]).T.reset_index().rename(
                                     columns={'index': '項目', 0: '值'}
                                 ).to_excel(writer, index=False, sheet_name='合併統計')
