@@ -2,6 +2,18 @@
 import pandas as pd
 
 
+def _format_num(v):
+    """整數就顯示整數，避免 4385.0"""
+    try:
+        if pd.isna(v):
+            return v
+        if isinstance(v, float) and v == int(v):
+            return int(v)
+        return v
+    except Exception:
+        return v
+
+
 def build_clean_report(stats, total_check=None, template_info=None):
     """建立清理報告 DataFrame（依模式顯示不同項目）"""
     invalid_dates = stats.get('invalid_dates', [])
@@ -35,8 +47,8 @@ def build_clean_report(stats, total_check=None, template_info=None):
 
 def build_summary_rows(df_clean, total_check):
     """
-    建立彙總列（附加在明細下方，不混入資料區）
-    回傳 4 列：1 個分隔列 + 原始總計 / 重算總計 / 差異
+    建立彙總列（附加在明細下方）
+    差異 = 重算總計 − 原始總計
     """
     if not total_check or df_clean is None or len(df_clean.columns) == 0:
         return None
@@ -44,9 +56,11 @@ def build_summary_rows(df_clean, total_check):
     cols = list(df_clean.columns)
     empty = {c: '' for c in cols}
 
-    # 決定標籤欄位（優先「項目」，其次「備註」，最後第一欄）
+    # 標籤欄位優先順序（產品、商品優先於備註）
     label_col = None
-    for candidate in ['項目', '項目名稱', '品項', '備註', '說明', '產品', '商品', '名稱']:
+    for candidate in ['項目', '項目名稱', '品項', '產品', '產品名稱',
+                      '商品', '商品名稱', '名稱', '科目', '費用',
+                      '類別', '分類', '說明', '備註']:
         if candidate in cols:
             label_col = candidate
             break
@@ -54,7 +68,7 @@ def build_summary_rows(df_clean, total_check):
         label_col = cols[0]
 
     rows = []
-    # 分隔列（全空）
+    # 分隔列
     rows.append(empty.copy())
 
     multi = len(total_check) > 1
@@ -63,7 +77,8 @@ def build_summary_rows(df_clean, total_check):
         col_name = item.get('column', '')
         original = item.get('summary_value', 0)
         recalc = item.get('calculated_value', 0)
-        diff = item.get('difference', 0)
+        # 差異 = 重算 − 原始
+        diff = round(recalc - original, 2)
 
         suffix = f'（{col_name}）' if multi else ''
 
@@ -71,14 +86,14 @@ def build_summary_rows(df_clean, total_check):
         r = empty.copy()
         r[label_col] = f'原始總計{suffix}'
         if col_name in cols:
-            r[col_name] = original
+            r[col_name] = _format_num(original)
         rows.append(r)
 
         # 重算總計
         r = empty.copy()
         r[label_col] = f'重算總計{suffix}'
         if col_name in cols:
-            r[col_name] = recalc
+            r[col_name] = _format_num(recalc)
         rows.append(r)
 
         # 差異
@@ -86,31 +101,35 @@ def build_summary_rows(df_clean, total_check):
         r[label_col] = f'差異{suffix}'
         if col_name in cols:
             if diff > 0:
-                r[col_name] = f'+{diff}'
+                r[col_name] = f'+{_format_num(diff)}'
+            elif diff < 0:
+                r[col_name] = str(_format_num(diff))
             else:
-                r[col_name] = str(diff)
+                r[col_name] = '0'
         rows.append(r)
 
     return pd.DataFrame(rows, columns=cols)
 
 
 def build_total_summary_table(total_check):
-    """建立總計摘要表（顯示在清理報告區塊）"""
+    """總計摘要表（差異 = 重算 − 原始）"""
     if not total_check:
         return pd.DataFrame()
     rows = []
     for item in total_check:
+        original = item.get('summary_value', 0)
+        recalc = item.get('calculated_value', 0)
+        diff = round(recalc - original, 2)
         rows.append({
             '欄位': item.get('column', ''),
-            '原始總計': item.get('summary_value', 0),
-            '重算總計': item.get('calculated_value', 0),
-            '差異': item.get('difference', 0),
+            '原始總計': _format_num(original),
+            '重算總計': _format_num(recalc),
+            '差異': f'+{_format_num(diff)}' if diff > 0 else str(_format_num(diff)),
         })
     return pd.DataFrame(rows)
 
 
 def build_invalid_date_table(invalid_dates):
-    """建立無效日期明細表"""
     if not invalid_dates:
         return pd.DataFrame()
     rows = []
@@ -126,7 +145,6 @@ def build_invalid_date_table(invalid_dates):
 
 
 def build_duplicate_table(dup_records):
-    """建立疑似重複明細表"""
     if not dup_records:
         return pd.DataFrame()
     rows = []
@@ -143,7 +161,6 @@ def build_duplicate_table(dup_records):
 
 
 def build_anomaly_table(anomalies):
-    """建立異常清單 DataFrame"""
     if not anomalies:
         return pd.DataFrame()
     df = pd.DataFrame(anomalies)
@@ -154,17 +171,19 @@ def build_anomaly_table(anomalies):
 
 
 def build_total_check_table(total_check, calculated_total=None, original_total=None):
-    """建立總計驗證報告"""
+    """總計驗證報告（差異 = 重算 − 原始）"""
     rows = []
     for item in (total_check or []):
-        diff = item['difference']
-        pct = abs(diff) / max(item['calculated_value'], 1) * 100
+        original = item.get('summary_value', 0)
+        recalc = item.get('calculated_value', 0)
+        diff = round(recalc - original, 2)
+        pct = abs(diff) / max(recalc, 1) * 100
         rows.append({
-            '欄位': item['column'],
-            '明細加總': item['calculated_value'],
-            '原始總計': item['summary_value'],
-            '差額': diff,
-            '差額百分比': f"{pct:.2f}%",
+            '欄位': item.get('column', ''),
+            '原始總計': _format_num(original),
+            '重算總計': _format_num(recalc),
+            '差異': f'+{_format_num(diff)}' if diff > 0 else str(_format_num(diff)),
+            '差異百分比': f"{pct:.2f}%",
             '警示': '🔴 超過 5%' if pct > 5 else '🟡 需確認',
         })
     return pd.DataFrame(rows)
