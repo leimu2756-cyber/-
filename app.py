@@ -431,6 +431,7 @@ elif st.session_state['user_role'] == 'client':
                                 'flag_duplicates': opt_flag_dup,
                                 'summary_row_action': summary_action_map[summary_action],
                                 'clean_columns': True,
+                                'standardize_columns': True, 
                                 'trim_strings': True,
                                 'normalize_phone': opt_phone,
                                 'normalize_date': opt_date,
