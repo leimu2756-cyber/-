@@ -11,6 +11,8 @@ from templates import detect_template, suggest_column_mapping, TEMPLATES
 from merge import merge_files, detect_merge_strategy, suggest_join_key
 from report import (
     build_clean_report,
+    build_summary_rows,
+    build_total_summary_table,
     build_invalid_date_table,
     build_duplicate_table,
     build_anomaly_table,
@@ -20,9 +22,6 @@ from utils import build_dataframe
 from db import init_db, fetch_one, fetch_all, execute
 
 
-# ============================================================
-# 0. 設定
-# ============================================================
 ADMIN_EMAIL = '717804lin@gmail.com'
 
 ANNOUNCEMENT = {
@@ -85,7 +84,7 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 1. 側邊欄
+# 側邊欄
 # ============================================================
 st.sidebar.title("🧹 AI 資料清理工作台")
 client_page = None
@@ -170,7 +169,7 @@ else:
 
 
 # ============================================================
-# 2. 未登入首頁
+# 未登入首頁
 # ============================================================
 if not st.session_state['logged_in']:
     if ANNOUNCEMENT['level'] == 'info':
@@ -187,8 +186,8 @@ if not st.session_state['logged_in']:
     st.markdown(f"""
 ### 💡 核心功能
 1. **AI 欄位識別** — 自動判斷 Email、手機、身分證、日期、金額等格式
-2. **總計自動重算** — 比對明細加總 vs 原始總計，發現差異立即警示
-3. **多檔合併** — 支援垂直堆疊 + 水平 JOIN（用共同欄位接表）
+2. **總計自動重算** — 比對明細加總 vs 原始總計，附上完整彙總
+3. **多檔合併** — 支援垂直堆疊 + 水平 JOIN
 4. **重複資料處理** — 可選「僅標記」或「自動去重」
 5. **資料分析** — 分類圓餅圖、每月收支、付款方式分布
 6. **隱私保護** — 資料僅在記憶體處理，密碼 bcrypt 雜湊儲存
@@ -201,32 +200,25 @@ if not st.session_state['logged_in']:
     st.markdown("""
 ### 🔒 隱私政策
 
-**1. 檔案處理**
-所有上傳的檔案僅在伺服器記憶體中處理，**不會寫入硬碟**。處理完成後，暫存資料立即銷毀。
+**1. 檔案處理**：所有上傳的檔案僅在伺服器記憶體中處理，**不會寫入硬碟**。
 
-**2. 資料儲存**
-我們只儲存您的帳號、密碼（bcrypt 雜湊）、聯絡方式。**不會儲存任何您上傳的檔案內容。**
+**2. 資料儲存**：只儲存帳號、密碼（bcrypt 雜湊）、聯絡方式。**不儲存任何上傳的檔案內容。**
 
-**3. 密碼安全**
-您的密碼以 bcrypt 雜湊儲存，**連管理員也無法看到原始密碼**。
+**3. 密碼安全**：您的密碼以 bcrypt 雜湊儲存，**連管理員也無法看到原始密碼**。
 
-**4. 第三方分享**
-我們**不會**將您的資料分享給任何第三方。
+**4. 第三方分享**：我們**不會**將您的資料分享給任何第三方。
 
-**5. 資料刪除**
-您可以隨時來信要求刪除您的帳號與所有相關資料。
+**5. 資料刪除**：您可以隨時來信要求刪除您的帳號與所有相關資料。
 
-**6. 傳輸加密**
-所有資料透過 HTTPS 加密傳輸，資料庫連線使用 SSL。
+**6. 傳輸加密**：所有資料透過 HTTPS 加密傳輸，資料庫連線使用 SSL。
 
-**7. 登入安全**
-閒置超過 30 分鐘會自動登出，保護您的帳號安全。
+**7. 登入安全**：閒置超過 30 分鐘會自動登出。
 
 若有任何隱私相關問題，請來信：""" + ADMIN_EMAIL)
 
 
 # ============================================================
-# 3. 管理員後台
+# 管理員後台
 # ============================================================
 elif st.session_state['user_role'] == 'admin':
     st.title("🛠️ 管理員控制後台")
@@ -289,7 +281,7 @@ elif st.session_state['user_role'] == 'admin':
 
 
 # ============================================================
-# 4. 客戶端
+# 客戶端
 # ============================================================
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
@@ -409,9 +401,6 @@ elif st.session_state['user_role'] == 'client':
                             "分離到另一張表": "separate",
                         }
 
-                        # ==========================================
-                        # 重複資料處理模式（新增）
-                        # ==========================================
                         st.markdown("**🔁 重複資料處理方式**")
                         dup_mode_label = st.radio(
                             "選擇重複資料的處理方式",
@@ -424,10 +413,6 @@ elif st.session_state['user_role'] == 'client':
                             label_visibility="collapsed",
                         )
                         dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
-                        if dup_mode == 'mark':
-                            st.caption("✅ 保留所有原始列，僅新增「疑似重複」欄位供您判斷")
-                        else:
-                            st.caption("⚠️ 自動刪除完全相同的列，只保留第一筆")
 
                         st.markdown("---")
                         opt_date = st.checkbox("標準化日期格式", value=True, key="single_date")
@@ -445,7 +430,7 @@ elif st.session_state['user_role'] == 'client':
                             clean_options = {
                                 'remove_non_data_rows': True,
                                 'clean_excel_errors': True,
-                                'duplicate_mode': dup_mode,        # mark / drop
+                                'duplicate_mode': dup_mode,
                                 'summary_row_action': summary_action_map[summary_action],
                                 'clean_columns': True,
                                 'standardize_columns': True,
@@ -459,7 +444,11 @@ elif st.session_state['user_role'] == 'client':
                             quality_before = SmartCleaner.quality_score(df)
                             quality_after = SmartCleaner.quality_score(df_clean)
                             report_df = SmartCleaner.analyze_dataframe(df_clean)
-                            anomalies = SmartCleaner.detect_anomalies(df_clean, source_name=uploaded_file.name)
+                            anomalies = SmartCleaner.detect_anomalies(
+                                df_clean,
+                                source_name=uploaded_file.name,
+                                total_check=total_check,      # 傳入總計檢查結果
+                            )
                         except Exception as e:
                             st.error(f"清理失敗：{e}")
                             st.stop()
@@ -470,23 +459,51 @@ elif st.session_state['user_role'] == 'client':
                         progress.progress(100)
                         status.empty()
 
+                        # ========================================
+                        # 總計不一致警示（紅色）
+                        # ========================================
                         if total_check:
-                            st.error("🚨 **總計不一致！**")
                             for item in total_check:
-                                pct = abs(item['difference']) / max(item['calculated_value'], 1) * 100
-                                color = "🔴" if pct > 5 else "🟡"
-                                st.markdown(
-                                    f"- {color} **{item['column']}**：明細 `{item['calculated_value']:,}` "
-                                    f"vs 原始總計 `{item['summary_value']:,}`，"
-                                    f"差額 `{item['difference']:+,}`（{pct:.2f}%）"
-                                )
+                                col_name = item.get('column', '')
+                                original = item.get('summary_value', 0)
+                                recalc = item.get('calculated_value', 0)
+                                diff = item.get('difference', 0)
+                                pct = abs(diff) / max(recalc, 1) * 100
+                                if pct > 5:
+                                    st.error(
+                                        f"🚨 **總計不一致（{col_name}）** ｜ "
+                                        f"原始總計：`{original:,}` ｜ "
+                                        f"重算總計：`{recalc:,}` ｜ "
+                                        f"差異：`{diff:+,}`（{pct:.2f}%）"
+                                    )
+                                else:
+                                    st.warning(
+                                        f"⚠️ **總計有些微差異（{col_name}）** ｜ "
+                                        f"原始總計：`{original:,}` ｜ "
+                                        f"重算總計：`{recalc:,}` ｜ "
+                                        f"差異：`{diff:+,}`"
+                                    )
+
+                        # ========================================
+                        # 建立下載用的 DataFrame（附加彙總列）
+                        # ========================================
+                        download_df = df_clean.copy()
+                        summary_rows = build_summary_rows(df_clean, total_check)
+                        if summary_rows is not None and len(summary_rows) > 0:
+                            download_df = pd.concat(
+                                [download_df, summary_rows], ignore_index=True
+                            )
 
                         st.markdown("---")
                         st.markdown("## ✅ 清理完成！")
+                        st.caption(
+                            "💡 下載檔案已包含明細資料 + 下方彙總列（原始總計、重算總計、差異）"
+                        )
+
                         col_a, col_b, col_c = st.columns(3)
                         base = os.path.splitext(uploaded_file.name)[0]
 
-                        csv_bytes = df_clean.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                        csv_bytes = download_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes,
                                               f"{base}_cleaned.csv", "text/csv",
@@ -495,9 +512,9 @@ elif st.session_state['user_role'] == 'client':
 
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            df_clean.to_excel(writer, index=False, sheet_name='清理後')
+                            download_df.to_excel(writer, index=False, sheet_name='清理後')
                             if summary_df is not None and len(summary_df) > 0:
-                                summary_df.to_excel(writer, index=False, sheet_name='總計')
+                                summary_df.to_excel(writer, index=False, sheet_name='原始總計')
                             if len(report_df) > 0:
                                 report_df.drop(columns=['_raw_type'], errors='ignore').to_excel(
                                     writer, index=False, sheet_name='欄位報告')
@@ -513,6 +530,10 @@ elif st.session_state['user_role'] == 'client':
                                 dup_df = build_duplicate_table(dup_records)
                                 if len(dup_df) > 0:
                                     dup_df.to_excel(writer, index=False, sheet_name='疑似重複')
+                            if total_check:
+                                tct = build_total_summary_table(total_check)
+                                if len(tct) > 0:
+                                    tct.to_excel(writer, index=False, sheet_name='總計比對')
                         excel_bytes = excel_buffer.getvalue()
                         with col_b:
                             st.download_button("📊 下載 Excel", excel_bytes,
@@ -521,7 +542,9 @@ elif st.session_state['user_role'] == 'client':
                                               use_container_width=True,
                                               key="single_dl_xlsx")
 
-                        json_bytes = df_clean.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
+                        json_bytes = download_df.to_json(
+                            orient='records', force_ascii=False, indent=2
+                        ).encode('utf-8')
                         with col_c:
                             st.download_button("📋 下載 JSON", json_bytes,
                                               f"{base}_cleaned.json", "application/json",
@@ -532,17 +555,27 @@ elif st.session_state['user_role'] == 'client':
                         c1, c2, c3 = st.columns(3)
                         c1.metric("原始資料", f"{len(df)} 列")
                         removed = len(df) - len(df_clean)
-                        c2.metric("清理後", f"{len(df_clean)} 列",
+                        c2.metric("清理後明細", f"{len(df_clean)} 列",
                                   delta=f"-{removed}" if removed > 0 else "0")
                         c3.metric("品質分數", f"{quality_after} / 100",
                                   delta=f"+{round(quality_after - quality_before, 1)}" if quality_after > quality_before else "0")
 
+                        # ========================================
+                        # 清理報告
+                        # ========================================
                         with st.expander("📊 清理報告", expanded=True):
                             rep = build_clean_report(stats, total_check, template_info)
                             if len(rep) > 0:
                                 st.dataframe(rep, use_container_width=True, hide_index=True)
                             else:
                                 st.info("沒有需要處理的地方。")
+
+                            # 總計摘要
+                            if total_check:
+                                st.markdown("**📐 總計驗證**")
+                                tct = build_total_summary_table(total_check)
+                                if len(tct) > 0:
+                                    st.dataframe(tct, use_container_width=True, hide_index=True)
 
                             invalid_dates = stats.get('invalid_dates', [])
                             if invalid_dates:
@@ -561,8 +594,11 @@ elif st.session_state['user_role'] == 'client':
                         with st.expander("🔍 清理前後對比（前 10 筆）", expanded=False):
                             st.markdown("**清理前**")
                             st.dataframe(df.head(10), use_container_width=True)
-                            st.markdown("**清理後**")
+                            st.markdown("**清理後明細**")
                             st.dataframe(df_clean.head(10), use_container_width=True)
+                            if summary_rows is not None and len(summary_rows) > 0:
+                                st.markdown("**下載檔案底部彙總**")
+                                st.dataframe(summary_rows, use_container_width=True)
 
                         with st.expander("🤖 欄位識別報告", expanded=False):
                             st.dataframe(report_df.drop(columns=['_raw_type'], errors='ignore'),
@@ -701,9 +737,6 @@ elif st.session_state['user_role'] == 'client':
 
                                 st.caption(f"💡 將用「{join_key}」欄位，以「{base_file}」為基準做 {join_type.upper()} JOIN")
 
-                        # ==========================================
-                        # 重複資料處理模式（多檔合併）
-                        # ==========================================
                         st.markdown("**🔁 重複資料處理方式**")
                         dup_mode_label = st.radio(
                             "選擇重複資料的處理方式",
@@ -716,10 +749,6 @@ elif st.session_state['user_role'] == 'client':
                             label_visibility="collapsed",
                         )
                         dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
-                        if dup_mode == 'mark':
-                            st.caption("✅ 保留所有原始列，僅新增「疑似重複」欄位供您判斷")
-                        else:
-                            st.caption("⚠️ 自動刪除完全相同的列，只保留第一筆")
 
                         col1, col2 = st.columns(2)
                         with col2:
@@ -757,11 +786,25 @@ elif st.session_state['user_role'] == 'client':
                         else:
                             merged = result['merged_df']
                             stats = result['stats']
+
+                            # ========================================
+                            # 合併後總計驗證
+                            # ========================================
+                            merged_total_check = []
+                            try:
+                                if '總計' in merged.astype(str).values:
+                                    pass
+                            except Exception:
+                                pass
+
+                            # 建立下載用 DataFrame（附加彙總，如果有）
+                            download_merged = merged.copy()
+
                             st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
 
                             st.markdown("---")
                             col_a, col_b = st.columns(2)
-                            csv_bytes = merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                            csv_bytes = download_merged.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                             with col_a:
                                 st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
                                                   "text/csv", use_container_width=True, type="primary",
@@ -769,7 +812,7 @@ elif st.session_state['user_role'] == 'client':
 
                             excel_buffer = io.BytesIO()
                             with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                                merged.to_excel(writer, index=False, sheet_name='合併明細')
+                                download_merged.to_excel(writer, index=False, sheet_name='合併明細')
                                 pd.DataFrame([stats]).T.reset_index().rename(
                                     columns={'index': '項目', 0: '值'}
                                 ).to_excel(writer, index=False, sheet_name='合併統計')
@@ -782,8 +825,8 @@ elif st.session_state['user_role'] == 'client':
                                         total_rows.append({
                                             '檔案': info['file'],
                                             '欄位': tc['column'],
-                                            '明細加總': tc['calculated_value'],
                                             '原始總計': tc['summary_value'],
+                                            '重算總計': tc['calculated_value'],
                                             '差額': tc['difference'],
                                         })
                                 if total_rows:
@@ -809,19 +852,20 @@ elif st.session_state['user_role'] == 'client':
                                     detail_parts.append(f"{fname}：{rows} 列")
                                 st.caption("📊 各檔清理後：" + " ｜ ".join(detail_parts))
 
+                            # 各檔總計比對
                             total_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
                                     total_rows.append({
                                         '檔案': info['file'],
                                         '欄位': tc['column'],
-                                        '明細加總': tc['calculated_value'],
                                         '原始總計': tc['summary_value'],
+                                        '重算總計': tc['calculated_value'],
                                         '差額': tc['difference'],
                                         '差額%': f"{abs(tc['difference']) / max(tc['calculated_value'],1) * 100:.2f}%",
                                     })
                             if total_rows:
-                                st.error("🚨 **總計不一致**")
+                                st.error("🚨 **各檔總計不一致**")
                                 st.dataframe(pd.DataFrame(total_rows), use_container_width=True)
 
                             with st.expander("📋 合併結果預覽", expanded=True):
