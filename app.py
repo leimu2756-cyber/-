@@ -87,27 +87,109 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 工具函式
+# 工具函式：三種匯出格式都正確處理整數值
 # ============================================================
-def to_csv_bytes(df, **kwargs):
-    """統一的 CSV 匯出：使用 %g 讓整數不顯示小數點"""
-    return df.to_csv(
-        index=False, encoding='utf-8-sig', float_format='%g', **kwargs
-    ).encode('utf-8-sig')
+def _format_cell_for_text(v):
+    """單一格：數字轉字串（整數不顯示 .0）"""
+    if v is None:
+        return ''
+    try:
+        if pd.isna(v):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, float):
+        if v == int(v):
+            return str(int(v))
+        return str(v)
+    if isinstance(v, int):
+        return str(v)
+    return str(v)
 
 
-def to_excel_clean(df):
-    """Excel 匯出前把整數欄位轉成 Int64，避免顯示 .0"""
+def df_to_csv_bytes(df):
+    """自訂 CSV 匯出：逐格處理，避免 85.0"""
+    lines = []
+    # 表頭
+    header_cells = []
+    for c in df.columns:
+        s = str(c)
+        if ',' in s or '"' in s or '\n' in s:
+            s = '"' + s.replace('"', '""') + '"'
+        header_cells.append(s)
+    lines.append(','.join(header_cells))
+    # 內容
+    for _, row in df.iterrows():
+        cells = []
+        for v in row.values:
+            s = _format_cell_for_text(v)
+            if ',' in s or '"' in s or '\n' in s:
+                s = '"' + s.replace('"', '""') + '"'
+            cells.append(s)
+        lines.append(','.join(cells))
+    return ('\n'.join(lines)).encode('utf-8-sig')
+
+
+def df_to_excel_bytes(df):
+    """Excel 匯出：整數值的 float 轉成 int，保持儲存格為數字"""
     df_out = df.copy()
     for col in df_out.columns:
         try:
-            if df_out[col].dtype == 'float64':
-                non_na = df_out[col].dropna()
-                if len(non_na) > 0 and (non_na % 1 == 0).all():
-                    df_out[col] = df_out[col].astype('Int64')
+            new_vals = []
+            for v in df_out[col].values:
+                if isinstance(v, float) and pd.notna(v) and v == int(v):
+                    new_vals.append(int(v))
+                else:
+                    new_vals.append(v)
+            df_out[col] = pd.Series(new_vals, index=df_out.index)
         except Exception:
             pass
-    return df_out
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df_out.to_excel(writer, index=False, sheet_name='清理後')
+    return buffer.getvalue()
+
+
+def df_to_excel_multi(sheets_dict):
+    """一次寫多個工作表"""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        for name, df in sheets_dict.items():
+            if df is None or len(df) == 0:
+                continue
+            df_out = df.copy()
+            for col in df_out.columns:
+                try:
+                    new_vals = []
+                    for v in df_out[col].values:
+                        if isinstance(v, float) and pd.notna(v) and v == int(v):
+                            new_vals.append(int(v))
+                        else:
+                            new_vals.append(v)
+                    df_out[col] = pd.Series(new_vals, index=df_out.index)
+                except Exception:
+                    pass
+            df_out.to_excel(writer, index=False, sheet_name=name[:31])
+    return buffer.getvalue()
+
+
+def df_to_json_bytes(df):
+    """JSON 匯出：整數值不顯示 .0"""
+    df_out = df.copy()
+    for col in df_out.columns:
+        try:
+            new_vals = []
+            for v in df_out[col].values:
+                if isinstance(v, float) and pd.notna(v) and v == int(v):
+                    new_vals.append(int(v))
+                else:
+                    new_vals.append(v)
+            df_out[col] = pd.Series(new_vals, index=df_out.index)
+        except Exception:
+            pass
+    return df_out.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
 
 
 # ============================================================
@@ -526,38 +608,38 @@ elif st.session_state['user_role'] == 'client':
                         col_a, col_b, col_c = st.columns(3)
                         base = os.path.splitext(uploaded_file.name)[0]
 
-                        csv_bytes = to_csv_bytes(download_df)
+                        # CSV 匯出
+                        csv_bytes = df_to_csv_bytes(download_df)
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes,
                                               f"{base}_cleaned.csv", "text/csv",
                                               use_container_width=True, type="primary",
                                               key="single_dl_csv")
 
-                        excel_buffer = io.BytesIO()
-                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            to_excel_clean(download_df).to_excel(writer, index=False, sheet_name='清理後')
-                            if summary_df is not None and len(summary_df) > 0:
-                                to_excel_clean(summary_df).to_excel(writer, index=False, sheet_name='原始總計')
-                            if len(report_df) > 0:
-                                report_df.drop(columns=['_raw_type'], errors='ignore').to_excel(
-                                    writer, index=False, sheet_name='欄位報告')
-                            if anomalies:
-                                pd.DataFrame(anomalies).to_excel(writer, index=False, sheet_name='異常')
-                            invalid_dates = stats.get('invalid_dates', [])
-                            if invalid_dates:
-                                inv_df = build_invalid_date_table(invalid_dates)
-                                if len(inv_df) > 0:
-                                    inv_df.to_excel(writer, index=False, sheet_name='無效日期')
-                            dup_records = stats.get('duplicates_records', [])
-                            if dup_records:
-                                dup_df = build_duplicate_table(dup_records)
-                                if len(dup_df) > 0:
-                                    dup_df.to_excel(writer, index=False, sheet_name='疑似重複')
-                            if total_check:
-                                tct = build_total_summary_table(total_check)
-                                if len(tct) > 0:
-                                    tct.to_excel(writer, index=False, sheet_name='總計比對')
-                        excel_bytes = excel_buffer.getvalue()
+                        # Excel 匯出（多工作表）
+                        sheets = {'清理後': download_df}
+                        if summary_df is not None and len(summary_df) > 0:
+                            sheets['原始總計'] = summary_df
+                        if len(report_df) > 0:
+                            sheets['欄位報告'] = report_df.drop(columns=['_raw_type'], errors='ignore')
+                        if anomalies:
+                            sheets['異常'] = pd.DataFrame(anomalies)
+                        invalid_dates = stats.get('invalid_dates', [])
+                        if invalid_dates:
+                            inv_df = build_invalid_date_table(invalid_dates)
+                            if len(inv_df) > 0:
+                                sheets['無效日期'] = inv_df
+                        dup_records = stats.get('duplicates_records', [])
+                        if dup_records:
+                            dup_df = build_duplicate_table(dup_records)
+                            if len(dup_df) > 0:
+                                sheets['疑似重複'] = dup_df
+                        if total_check:
+                            tct = build_total_summary_table(total_check)
+                            if len(tct) > 0:
+                                sheets['總計比對'] = tct
+
+                        excel_bytes = df_to_excel_multi(sheets)
                         with col_b:
                             st.download_button("📊 下載 Excel", excel_bytes,
                                               f"{base}_cleaned.xlsx",
@@ -565,9 +647,8 @@ elif st.session_state['user_role'] == 'client':
                                               use_container_width=True,
                                               key="single_dl_xlsx")
 
-                        json_bytes = download_df.to_json(
-                            orient='records', force_ascii=False, indent=2
-                        ).encode('utf-8')
+                        # JSON 匯出
+                        json_bytes = df_to_json_bytes(download_df)
                         with col_c:
                             st.download_button("📋 下載 JSON", json_bytes,
                                               f"{base}_cleaned.json", "application/json",
@@ -810,38 +891,41 @@ elif st.session_state['user_role'] == 'client':
 
                             st.markdown("---")
                             col_a, col_b = st.columns(2)
-                            csv_bytes = to_csv_bytes(merged)
+
+                            csv_bytes = df_to_csv_bytes(merged)
                             with col_a:
                                 st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
                                                   "text/csv", use_container_width=True, type="primary",
                                                   key="merge_dl_csv")
 
-                            excel_buffer = io.BytesIO()
-                            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                                to_excel_clean(merged).to_excel(writer, index=False, sheet_name='合併明細')
-                                pd.DataFrame([stats]).T.reset_index().rename(
+                            # Excel 多工作表
+                            total_rows = []
+                            for info in result['files_info']:
+                                for tc in info.get('total_check', []):
+                                    orig = tc['summary_value']
+                                    rec = tc['calculated_value']
+                                    d = round(rec - orig, 2)
+                                    d_str = f'+{d:,}' if d > 0 else f'{d:,}'
+                                    total_rows.append({
+                                        '檔案': info['file'],
+                                        '欄位': tc['column'],
+                                        '原始總計': orig,
+                                        '重算總計': rec,
+                                        '差額': d_str,
+                                    })
+
+                            sheets = {
+                                '合併明細': merged,
+                                '合併統計': pd.DataFrame([stats]).T.reset_index().rename(
                                     columns={'index': '項目', 0: '值'}
-                                ).to_excel(writer, index=False, sheet_name='合併統計')
-                                if result.get('anomalies'):
-                                    pd.DataFrame(result['anomalies']).to_excel(
-                                        writer, index=False, sheet_name='異常清單')
-                                total_rows = []
-                                for info in result['files_info']:
-                                    for tc in info.get('total_check', []):
-                                        orig = tc['summary_value']
-                                        rec = tc['calculated_value']
-                                        d = round(rec - orig, 2)
-                                        d_str = f'+{d:,}' if d > 0 else f'{d:,}'
-                                        total_rows.append({
-                                            '檔案': info['file'],
-                                            '欄位': tc['column'],
-                                            '原始總計': orig,
-                                            '重算總計': rec,
-                                            '差額': d_str,
-                                        })
-                                if total_rows:
-                                    pd.DataFrame(total_rows).to_excel(writer, index=False, sheet_name='原始總計比對')
-                            excel_bytes = excel_buffer.getvalue()
+                                ),
+                            }
+                            if result.get('anomalies'):
+                                sheets['異常清單'] = pd.DataFrame(result['anomalies'])
+                            if total_rows:
+                                sheets['原始總計比對'] = pd.DataFrame(total_rows)
+
+                            excel_bytes = df_to_excel_multi(sheets)
                             with col_b:
                                 st.download_button("📊 下載 Excel", excel_bytes, "merged.xlsx",
                                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -862,14 +946,15 @@ elif st.session_state['user_role'] == 'client':
                                     detail_parts.append(f"{fname}：{rows} 列")
                                 st.caption("📊 各檔清理後：" + " ｜ ".join(detail_parts))
 
-                            total_rows = []
+                            # 各檔總計比對
+                            display_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
                                     orig = tc['summary_value']
                                     rec = tc['calculated_value']
                                     d = round(rec - orig, 2)
                                     d_str = f'+{d:,}' if d > 0 else f'{d:,}'
-                                    total_rows.append({
+                                    display_rows.append({
                                         '檔案': info['file'],
                                         '欄位': tc['column'],
                                         '原始總計': orig,
@@ -877,9 +962,9 @@ elif st.session_state['user_role'] == 'client':
                                         '差額': d_str,
                                         '差額%': f"{abs(d) / max(rec, 1) * 100:.2f}%",
                                     })
-                            if total_rows:
+                            if display_rows:
                                 st.error("🚨 **各檔總計不一致**")
-                                st.dataframe(pd.DataFrame(total_rows), use_container_width=True)
+                                st.dataframe(pd.DataFrame(display_rows), use_container_width=True)
 
                             with st.expander("📋 合併結果預覽", expanded=True):
                                 st.dataframe(merged.head(20), use_container_width=True)
