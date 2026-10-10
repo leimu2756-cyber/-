@@ -7,7 +7,7 @@ from utils import (
     to_halfwidth, flatten_newlines, convert_minguo_to_western,
     clean_currency_value, is_summary_row, is_non_data_row,
     parse_chinese_number, has_chinese_number, strip_unit_suffix,
-    normalize_phone, is_phone_like,
+    normalize_phone, is_phone_like, standardize_columns,
     EXCEL_ERRORS, NON_DATA_KEYWORDS, SUMMARY_KEYWORDS,
     CN_MONEY_INDICATORS,
 )
@@ -19,10 +19,8 @@ def explain_invalid_date(value):
         return "空值"
 
     s = str(value).strip()
-    # 去掉標記
     s = s.replace('（无效日期）', '').replace('（無效日期）', '').strip()
 
-    # 嘗試解析
     m = re.match(r'^(\d{2,4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
     if not m:
         m = re.match(r'^(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
@@ -34,7 +32,6 @@ def explain_invalid_date(value):
     except Exception:
         return "無法解析日期"
 
-    # 判斷民國還是西元
     if y_raw < 200:
         y = y_raw + 1911
     else:
@@ -46,10 +43,8 @@ def explain_invalid_date(value):
     if not (1 <= d <= 31):
         return f"每月最多 31 天"
 
-    # 每月天數
     month_days = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
                   7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
-    # 閏年
     if (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0):
         month_days[2] = 29
 
@@ -99,7 +94,6 @@ class SmartCleaner:
         if len(s_str) == 0:
             return 'empty'
 
-        # 電話
         try:
             phone_count = s_str.apply(is_phone_like).sum()
             if phone_count / len(s_str) >= 0.6:
@@ -107,7 +101,6 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # 中文數字 → 視為數字
         try:
             cn_count = s_str.apply(has_chinese_number).sum()
             if cn_count / len(s_str) >= 0.3:
@@ -127,7 +120,6 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # 貨幣
         try:
             cn_money = s_str.apply(
                 lambda x: any(ind in x for ind in CN_MONEY_INDICATORS)
@@ -160,12 +152,10 @@ class SmartCleaner:
         except (ValueError, TypeError):
             pass
 
-        # 日期（含無效日期的欄位也算日期）
         try:
             parsed = pd.to_datetime(s, errors='coerce')
             if parsed.notna().sum() >= len(s) * 0.4:
                 return 'date'
-            # 檢查是否含「（無效日期）」標記
             invalid_date_count = s_str.str.contains(
                 '（无效日期）|（無效日期）', regex=True, na=False
             ).sum()
@@ -221,13 +211,14 @@ class SmartCleaner:
             'cells_halfwidth': 0,
             'cells_newline': 0,
             'dates_fixed': 0,
-            'invalid_dates': [],       # 新增：無效日期記錄
+            'invalid_dates': [],
             'currency_fixed': 0,
             'chinese_numbers_fixed': 0,
             'unit_suffix_fixed': 0,
             'phones_fixed': 0,
             'emails_fixed': 0,
             'columns_cleaned': 0,
+            'columns_standardized': 0,
             'duplicates_flagged': 0,
         }
 
@@ -305,7 +296,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 6. 欄位名稱
+        # 6. 欄位名稱清理
         if options.get('clean_columns', True):
             try:
                 new_cols = [str(c).strip() for c in df_clean.columns]
@@ -314,6 +305,23 @@ class SmartCleaner:
                     actions.append("✅ 清理欄位名稱頭尾空白")
             except Exception:
                 pass
+
+        # 6-2. 欄位名稱標準化（新增：修 Bug 2）
+        if options.get('standardize_columns', True):
+            try:
+                before_cols = list(df_clean.columns)
+                df_clean = standardize_columns(df_clean, enabled=True)
+                after_cols = list(df_clean.columns)
+                changed = sum(1 for a, b in zip(before_cols, after_cols) if a != b)
+                if changed > 0:
+                    stats['columns_standardized'] = changed
+                    renamed = [
+                        f"「{a}」→「{b}」"
+                        for a, b in zip(before_cols, after_cols) if a != b
+                    ]
+                    actions.append(f"✅ 標準化 {changed} 個欄位名稱：" + "、".join(renamed))
+            except Exception as e:
+                actions.append(f"⚠️ 欄位名稱標準化失敗：{e}")
 
         # 7. 文字 trim（電話欄位保持字串）
         if options.get('trim_strings', True):
@@ -347,15 +355,12 @@ class SmartCleaner:
             if touched:
                 stats['columns_cleaned'] = touched
 
-        # ==========================================================
-        # 8. 日期清理（核心改動：保留無效日期）
-        # ==========================================================
+        # 8. 日期清理
         if options.get('normalize_date', True):
             fixed = 0
             invalid_date_records = []
             try:
                 for col in df_clean.columns:
-                    # 判斷是否為日期欄位
                     try:
                         ctype = cls.detect_column_type(df_clean[col])
                     except Exception:
@@ -364,7 +369,6 @@ class SmartCleaner:
                     s_str = df_clean[col].dropna().astype(str).str.strip()
                     is_date_col = ctype in ('date', 'date_str')
 
-                    # 寬鬆判斷：如果欄位內有 >= 30% 是日期格式字串，也處理
                     if not is_date_col and len(s_str) > 0:
                         try:
                             date_like = s_str.str.match(
@@ -386,7 +390,6 @@ class SmartCleaner:
                             continue
 
                         s = str(v).strip()
-                        # 如果已經是「（無效日期）」標記，跳過
                         if '（无效日期）' in s or '（無效日期）' in s:
                             conv.append(v)
                             continue
@@ -394,12 +397,11 @@ class SmartCleaner:
                         result = convert_minguo_to_western(v)
                         result_str = str(result)
 
-                        # 檢查是否為無效日期標記
                         if '（无效日期）' in result_str or '（無效日期）' in result_str:
                             reason = explain_invalid_date(s)
                             invalid_date_records.append({
                                 'column': col,
-                                'row_index': idx + 1,   # 1-based，方便人閱讀
+                                'row_index': idx + 1,
                                 'raw_value': s,
                                 'marked_value': result_str,
                                 'reason': reason,
@@ -595,18 +597,11 @@ class SmartCleaner:
                 })
         return results
 
-    # ==========================================================
-    # 異常偵測（核心改動：新增無效日期 + 5 欄格式）
-    # ==========================================================
     @classmethod
     def detect_anomalies(cls, df, source_name=''):
-        """
-        偵測異常
-        回傳格式：[{来源档案, 列号, 问题类型, 说明, 建议}, ...]
-        """
         anomalies = []
 
-        # ---------- 1. 無效日期（重點） ----------
+        # 無效日期
         for col in df.columns:
             try:
                 s = df[col].dropna().astype(str)
@@ -632,7 +627,6 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # ---------- 2. 數值離群值 ----------
         for col in df.columns:
             try:
                 ctype = cls.detect_column_type(df[col])
@@ -661,8 +655,7 @@ class SmartCleaner:
 
             col_lower = str(col).lower()
 
-            # ---------- 3. 負數數量 ----------
-            if any(kw in col_lower for kw in ['數量', '數量', '数量', 'qty', 'quantity', '個數', '个数']):
+            if any(kw in col_lower for kw in ['數量', '数量', 'qty', 'quantity', '個數', '个数']):
                 try:
                     s = pd.to_numeric(df[col], errors='coerce').dropna()
                     neg = s[s < 0]
@@ -677,9 +670,8 @@ class SmartCleaner:
                 except Exception:
                     pass
 
-            # ---------- 4. 非數值內容 ----------
-            if any(kw in col_lower for kw in ['價格', '價格', '价格', '單價', '單價', '单价',
-                                              '金額', '金額', '金额', '數量', '数量']):
+            if any(kw in col_lower for kw in ['價格', '价格', '單價', '单价',
+                                              '金額', '金额', '數量', '数量']):
                 try:
                     s = df[col].dropna().astype(str)
                     weird = s[s.str.match(r'^[a-zA-Z\u4e00-\u9fa5]{1,10}$')]
