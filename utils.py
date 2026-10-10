@@ -44,6 +44,76 @@ UNIT_SUFFIXES = ['分', '級', '级', '歲', '岁', '個', '个', '件', '顆', 
                  '次', '筆', '笔', '年', '月', '日', '小時', '小时']
 
 
+# ==========================================================
+# 標準欄位名稱與同義詞對照表
+# ==========================================================
+STANDARD_COLUMNS = {
+    '日期': ['日期', '交易日期', '交易日', '交易時間', '交易时间', '下單日', '下單日期',
+             '下单日期', '訂單日期', '订单日期', '記帳日', '時間', '时间',
+             'Date', 'date', 'Time', 'time'],
+    '產品': ['產品', '产品', '產品名稱', '产品名称', '品項', '品项', '項目', '项目',
+             '商品', '商品名稱', '商品名称', '產品名', 'Item', 'item', 'Product', 'product'],
+    '金額': ['金額', '金额', '銷售額', '销售额', '營業額', '营业额', '總價', '总价',
+             '總金額', '总金额', '小計', '小计', '價錢', '价钱',
+             'Amount', 'amount', 'Revenue', 'revenue', 'Total', 'total'],
+    '業務': ['業務', '业务', '業務員', '业务员', '銷售員', '销售员', '負責人', '负责人'],
+    '付款方式': ['付款方式', '支付方式', '付款', 'Payment', 'payment'],
+    '備註': ['備註', '备注', '說明', '说明', 'Note', 'note', 'Memo', 'memo'],
+    '分類': ['分類', '分类', '類別', '类别', '類型', '类型', 'Category', 'category'],
+    '數量': ['數量', '数量', '訂購數量', '订购数量', '件數', '件数',
+             'Quantity', 'quantity', 'Qty', 'qty'],
+    '單價': ['單價', '单价', 'Unit Price', 'UnitPrice', '價格', '价格', 'Price', 'price'],
+    '客戶': ['客戶', '客户', '客戶名稱', '客户名称', '客戶姓名', '客户姓名',
+             '姓名', '買家', 'Customer', 'customer'],
+    '電話': ['電話', '电话', '手機', '手机', '手機號碼', '手机号码',
+             '聯絡電話', '联络电话', 'Phone', 'phone'],
+    'Email': ['Email', 'email', 'E-mail', 'e-mail', '電子郵件', '电子邮箱', '信箱'],
+    '地址': ['地址', '住址', 'Address', 'address'],
+    '公司': ['公司', '公司名稱', '公司名称', 'Company', 'company'],
+    '客戶ID': ['客戶ID', '客户ID', '客戶編號', '客户编号', 'CustomerID', 'customer_id'],
+    '產品編號': ['產品編號', '产品编号', '商品編號', '商品编号', '品號', '品号', 'ProductID'],
+    '訂單編號': ['訂單編號', '订单编号', '訂單號', '订单号', 'OrderID', 'order_id'],
+}
+
+
+def standardize_columns(df, enabled=True):
+    """
+    將同義欄位名稱統一為標準名稱
+    例如：「交易日期」→「日期」、「品項」→「產品」
+    避免衝突：若標準名稱已被使用，則不重複改名
+    """
+    if not enabled or df is None or len(df.columns) == 0:
+        return df
+
+    rename_map = {}
+    used_std_names = set()
+
+    # 第一輪：先標記已經使用標準名稱的欄位
+    for col in df.columns:
+        col_str = str(col).strip()
+        if col_str in STANDARD_COLUMNS:
+            used_std_names.add(col_str)
+
+    # 第二輪：把同義詞欄位改名
+    for col in df.columns:
+        col_str = str(col).strip()
+        if col_str in STANDARD_COLUMNS:
+            continue  # 已是標準名
+        if col in rename_map:
+            continue
+        for std_name, synonyms in STANDARD_COLUMNS.items():
+            if std_name in used_std_names:
+                continue
+            if col_str in synonyms:
+                rename_map[col] = std_name
+                used_std_names.add(std_name)
+                break
+
+    if rename_map:
+        return df.rename(columns=rename_map)
+    return df
+
+
 def parse_chinese_number(text):
     if text is None:
         return None
@@ -167,34 +237,50 @@ def validate_date(y, mo, d):
 
 
 def convert_minguo_to_western(value):
+    """
+    民國年 / 各種日期格式 → YYYY-MM-DD
+    支援：
+      2026/1/7、2026-01-07、115/1/7、115-01-07、1/7
+      民國115年1月7日、115年1月7日、2026年1月7日
+    """
     if pd.isna(value):
         return value
     s = str(value).strip()
     if s == '' or s.lower() == 'nan':
         return np.nan
 
+    # 只有月/日（1/7）
     m = re.match(r'^(\d{1,2})[\-/](\d{1,2})$', s)
     if m:
         mo, d = int(m.group(1)), int(m.group(2))
         if 1 <= mo <= 12 and 1 <= d <= 31:
             return validate_date(datetime.now().year, mo, d)
 
+    # 民國115年1月7日
     m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         return validate_date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3)))
 
+    # 2026年1月7日（4 位西元年，支援 1 或 2 位月日，含 01）
+    m = re.match(r'^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
+    if m:
+        return validate_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # 115年1月7日（2~3 位年份，視為民國）
     m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         y = int(m.group(1))
         if 1 <= y <= 200:
             return validate_date(y + 1911, int(m.group(2)), int(m.group(3)))
 
+    # 115/1/7 或 115-1-7（三位數年視為民國）
     m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
     if m:
         y = int(m.group(1))
         if 1 <= y <= 200:
             return validate_date(y + 1911, int(m.group(2)), int(m.group(3)))
 
+    # 四位西元年（2026/1/7 或 2026-01-07）
     m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
     if m:
         return validate_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
@@ -230,42 +316,32 @@ def clean_currency_value(value):
 
 
 def normalize_phone(value):
-    """
-    電話標準化：移除所有非數字字元（保留開頭 0），回傳字串
-    """
     if pd.isna(value):
         return value
     s = str(value).strip()
     if not s:
         return value
-    # 只保留數字
     digits = re.sub(r'\D', '', s)
     if not digits:
         return value
-    # 若開頭不是 0，且長度是 9（例如 922333444），補回 0
     if not digits.startswith('0') and len(digits) == 9:
         digits = '0' + digits
     return digits
 
 
 def is_phone_like(value):
-    """判斷一個值是否像電話號碼"""
     if pd.isna(value):
         return False
     s = str(value).strip()
     if not s:
         return False
-    # 只保留數字
     digits = re.sub(r'\D', '', s)
     if len(digits) < 8 or len(digits) > 11:
         return False
-    # 手機：09 開頭，共 10 碼
     if re.match(r'^09\d{8}$', digits):
         return True
-    # 市話：0 開頭，共 9~10 碼
     if re.match(r'^0\d{7,9}$', digits):
         return True
-    # 9 碼（開頭被吃掉的手機，例如 922333444）
     if re.match(r'^9\d{8}$', digits):
         return True
     return False
