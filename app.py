@@ -9,7 +9,12 @@ from cleaner import SmartCleaner
 from loader import load_any_file, format_bytes, SINGLE_FILE_LIMIT, TOTAL_UPLOAD_LIMIT
 from templates import detect_template, suggest_column_mapping, TEMPLATES
 from merge import merge_files, detect_merge_strategy, suggest_join_key
-from report import build_clean_report
+from report import (
+    build_clean_report,
+    build_invalid_date_table,
+    build_duplicate_table,
+    build_anomaly_table,
+)
 from analytics import render_analytics
 from utils import build_dataframe
 from db import init_db, fetch_one, fetch_all, execute
@@ -42,7 +47,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# 從 Secrets 讀取管理員密碼
 try:
     MASTER_PASSWORD = st.secrets["MASTER_PASSWORD"]
 except Exception:
@@ -63,7 +67,6 @@ try:
 except Exception as e:
     st.warning(f"⚠️ 資料庫連線異常：{e}")
 
-# Session 逾時設定（30 分鐘）
 SESSION_TIMEOUT = 30 * 60
 
 for key, default in [('logged_in', False), ('user_role', None), ('username', None),
@@ -71,7 +74,6 @@ for key, default in [('logged_in', False), ('user_role', None), ('username', Non
     if key not in st.session_state:
         st.session_state[key] = default
 
-# 檢查逾時
 if st.session_state['logged_in']:
     now = time.time()
     if now - st.session_state.get('last_activity', now) > SESSION_TIMEOUT:
@@ -187,8 +189,8 @@ if not st.session_state['logged_in']:
 1. **AI 欄位識別** — 自動判斷 Email、手機、身分證、日期、金額等格式
 2. **總計自動重算** — 比對明細加總 vs 原始總計，發現差異立即警示
 3. **多檔合併** — 支援垂直堆疊 + 水平 JOIN（用共同欄位接表）
-4. **資料分析** — 分類圓餅圖、每月收支、付款方式分布
-5. **行業模板** — 自動認得記帳本、電商訂單、客戶名單等常見格式
+4. **疑似重複標記** — 只標記不刪除，保留所有原始資料
+5. **資料分析** — 分類圓餅圖、每月收支、付款方式分布
 6. **隱私保護** — 資料僅在記憶體處理，密碼 bcrypt 雜湊儲存
 
 ### 📮 需要客製化服務？
@@ -292,9 +294,7 @@ elif st.session_state['user_role'] == 'admin':
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
 
-    # --------------------------------------------------------
     # 4-A. 意見反饋
-    # --------------------------------------------------------
     if client_page == "💬 意見反饋":
         st.title("💬 意見反饋與客製化需求")
         st.markdown(f"""
@@ -323,9 +323,7 @@ elif st.session_state['user_role'] == 'client':
                     st.balloons()
         st.divider()
 
-    # --------------------------------------------------------
     # 4-B. 資料清理工作台
-    # --------------------------------------------------------
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
@@ -410,8 +408,11 @@ elif st.session_state['user_role'] == 'client':
                             "完全移除": "remove",
                             "分離到另一張表": "separate",
                         }
-                        opt_dup = st.checkbox("移除完全重複的列", value=True, key="single_dup")
-                        opt_flag_dup = st.checkbox("標記疑似重複（不刪除）", value=False, key="single_flagdup")
+                        opt_flag_dup = st.checkbox(
+                            "標記疑似重複（只標記，不刪除）",
+                            value=True,
+                            key="single_flagdup",
+                        )
                         opt_date = st.checkbox("標準化日期格式", value=True, key="single_date")
                         opt_currency = st.checkbox("清理貨幣 / 中文數字", value=True, key="single_curr")
                         opt_phone = st.checkbox("標準化電話格式", value=True, key="single_phone")
@@ -427,11 +428,10 @@ elif st.session_state['user_role'] == 'client':
                             clean_options = {
                                 'remove_non_data_rows': True,
                                 'clean_excel_errors': True,
-                                'drop_duplicates': opt_dup,
-                                'flag_duplicates': opt_flag_dup,
+                                'flag_duplicates': opt_flag_dup,     # 只標記，不刪除
                                 'summary_row_action': summary_action_map[summary_action],
                                 'clean_columns': True,
-                                'standardize_columns': True, 
+                                'standardize_columns': True,
                                 'trim_strings': True,
                                 'normalize_phone': opt_phone,
                                 'normalize_date': opt_date,
@@ -442,7 +442,6 @@ elif st.session_state['user_role'] == 'client':
                             quality_before = SmartCleaner.quality_score(df)
                             quality_after = SmartCleaner.quality_score(df_clean)
                             report_df = SmartCleaner.analyze_dataframe(df_clean)
-                            # 傳入檔名，異常清單才會顯示「來源檔案」
                             anomalies = SmartCleaner.detect_anomalies(df_clean, source_name=uploaded_file.name)
                         except Exception as e:
                             st.error(f"清理失敗：{e}")
@@ -477,8 +476,6 @@ elif st.session_state['user_role'] == 'client':
                                               use_container_width=True, type="primary",
                                               key="single_dl_csv")
 
-                        from report import build_invalid_date_table
-
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                             df_clean.to_excel(writer, index=False, sheet_name='清理後')
@@ -489,12 +486,16 @@ elif st.session_state['user_role'] == 'client':
                                     writer, index=False, sheet_name='欄位報告')
                             if anomalies:
                                 pd.DataFrame(anomalies).to_excel(writer, index=False, sheet_name='異常')
-                            # 新增：無效日期明細
                             invalid_dates = stats.get('invalid_dates', [])
                             if invalid_dates:
                                 inv_df = build_invalid_date_table(invalid_dates)
                                 if len(inv_df) > 0:
                                     inv_df.to_excel(writer, index=False, sheet_name='無效日期')
+                            dup_records = stats.get('duplicates_records', [])
+                            if dup_records:
+                                dup_df = build_duplicate_table(dup_records)
+                                if len(dup_df) > 0:
+                                    dup_df.to_excel(writer, index=False, sheet_name='疑似重複')
                         excel_bytes = excel_buffer.getvalue()
                         with col_b:
                             st.download_button("📊 下載 Excel", excel_bytes,
@@ -526,14 +527,20 @@ elif st.session_state['user_role'] == 'client':
                             else:
                                 st.info("沒有需要處理的地方。")
 
-                            # 無效日期明細
                             invalid_dates = stats.get('invalid_dates', [])
                             if invalid_dates:
                                 st.warning(f"⚠️ 發現 {len(invalid_dates)} 筆無效日期")
-                                from report import build_invalid_date_table
                                 inv_df = build_invalid_date_table(invalid_dates)
                                 if len(inv_df) > 0:
                                     st.dataframe(inv_df, use_container_width=True, hide_index=True)
+
+                            dup_records = stats.get('duplicates_records', [])
+                            if dup_records:
+                                st.warning(f"⚠️ 發現 {len(dup_records)} 筆疑似重複（僅標記，未刪除）")
+                                dup_df = build_duplicate_table(dup_records)
+                                if len(dup_df) > 0:
+                                    st.dataframe(dup_df, use_container_width=True, hide_index=True)
+
                         with st.expander("🔍 清理前後對比（前 10 筆）", expanded=False):
                             st.markdown("**清理前**")
                             st.dataframe(df.head(10), use_container_width=True)
@@ -679,7 +686,11 @@ elif st.session_state['user_role'] == 'client':
 
                         col1, col2 = st.columns(2)
                         with col1:
-                            opt_flag_dup = st.checkbox("標記疑似重複", value=True, key="merge_flag")
+                            opt_flag_dup = st.checkbox(
+                                "標記疑似重複（只標記，不刪除）",
+                                value=True,
+                                key="merge_flag",
+                            )
                         with col2:
                             if use_join:
                                 opt_keep_source = True
