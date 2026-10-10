@@ -652,10 +652,27 @@ class SmartCleaner:
                 })
         return results
 
+
     @classmethod
-    def detect_anomalies(cls, df, source_name=''):
+    def detect_anomalies(cls, df, source_name='', total_check=None):
         anomalies = []
 
+        # 0. 總計不一致（新增）
+        if total_check:
+            for item in total_check:
+                col_name = item.get('column', '')
+                original = item.get('summary_value', 0)
+                recalc = item.get('calculated_value', 0)
+                diff = item.get('difference', 0)
+                pct = abs(diff) / max(recalc, 1) * 100
+                severity = '严重' if pct > 5 else '轻微'
+                anomalies.append({
+                    '来源档案': source_name,
+                    '列号': '-',
+                    '问题类型': '总计不一致',
+                    '说明': f'{col_name}：原始总计 {original:,}，重算总计 {recalc:,}，差额 {diff:+,}（{pct:.2f}%，{severity}）',
+                    '建议': '请确认原始总计是否正确，或检查是否有遗漏的明细资料',
+                })
         # 1. 無效日期
         for col in df.columns:
             if col == '疑似重複':
