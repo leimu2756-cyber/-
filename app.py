@@ -467,23 +467,26 @@ elif st.session_state['user_role'] == 'client':
                                 col_name = item.get('column', '')
                                 original = item.get('summary_value', 0)
                                 recalc = item.get('calculated_value', 0)
-                                diff = item.get('difference', 0)
+                                diff = round(recalc - original, 2)
                                 pct = abs(diff) / max(recalc, 1) * 100
+                                if diff > 0:
+                                    diff_str = f'+{diff:,}'
+                                else:
+                                    diff_str = f'{diff:,}'
                                 if pct > 5:
                                     st.error(
                                         f"🚨 **總計不一致（{col_name}）** ｜ "
                                         f"原始總計：`{original:,}` ｜ "
                                         f"重算總計：`{recalc:,}` ｜ "
-                                        f"差異：`{diff:+,}`（{pct:.2f}%）"
+                                        f"差異：`{diff_str}`（{pct:.2f}%）"
                                     )
                                 else:
                                     st.warning(
                                         f"⚠️ **總計有些微差異（{col_name}）** ｜ "
                                         f"原始總計：`{original:,}` ｜ "
                                         f"重算總計：`{recalc:,}` ｜ "
-                                        f"差異：`{diff:+,}`"
+                                        f"差異：`{diff_str}`"
                                     )
-
                         # ========================================
                         # 建立下載用的 DataFrame（附加彙總列）
                         # ========================================
@@ -856,13 +859,17 @@ elif st.session_state['user_role'] == 'client':
                             total_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
+                                    orig = tc['summary_value']
+                                    rec = tc['calculated_value']
+                                    d = round(rec - orig, 2)
+                                    d_str = f'+{d:,}' if d > 0 else f'{d:,}'
                                     total_rows.append({
                                         '檔案': info['file'],
                                         '欄位': tc['column'],
-                                        '原始總計': tc['summary_value'],
-                                        '重算總計': tc['calculated_value'],
-                                        '差額': tc['difference'],
-                                        '差額%': f"{abs(tc['difference']) / max(tc['calculated_value'],1) * 100:.2f}%",
+                                        '原始總計': orig,
+                                        '重算總計': rec,
+                                        '差額': d_str,
+                                        '差額%': f"{abs(d) / max(rec, 1) * 100:.2f}%",
                                     })
                             if total_rows:
                                 st.error("🚨 **各檔總計不一致**")
