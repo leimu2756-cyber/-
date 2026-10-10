@@ -189,7 +189,7 @@ if not st.session_state['logged_in']:
 1. **AI 欄位識別** — 自動判斷 Email、手機、身分證、日期、金額等格式
 2. **總計自動重算** — 比對明細加總 vs 原始總計，發現差異立即警示
 3. **多檔合併** — 支援垂直堆疊 + 水平 JOIN（用共同欄位接表）
-4. **疑似重複標記** — 只標記不刪除，保留所有原始資料
+4. **重複資料處理** — 可選「僅標記」或「自動去重」
 5. **資料分析** — 分類圓餅圖、每月收支、付款方式分布
 6. **隱私保護** — 資料僅在記憶體處理，密碼 bcrypt 雜湊儲存
 
@@ -395,7 +395,7 @@ elif st.session_state['user_role'] == 'client':
                             for k, v in col_suggest.items():
                                 st.write(f"- **{k}** → `{v}`")
 
-                    with st.expander("⚙️ 清理選項", expanded=False):
+                    with st.expander("⚙️ 清理選項", expanded=True):
                         template_choice = st.selectbox("選擇模板", list(TEMPLATES.keys()), index=0, key="single_tpl")
                         summary_action = st.radio(
                             "彙總列處理方式",
@@ -408,11 +408,28 @@ elif st.session_state['user_role'] == 'client':
                             "完全移除": "remove",
                             "分離到另一張表": "separate",
                         }
-                        opt_flag_dup = st.checkbox(
-                            "標記疑似重複（只標記，不刪除）",
-                            value=True,
-                            key="single_flagdup",
+
+                        # ==========================================
+                        # 重複資料處理模式（新增）
+                        # ==========================================
+                        st.markdown("**🔁 重複資料處理方式**")
+                        dup_mode_label = st.radio(
+                            "選擇重複資料的處理方式",
+                            [
+                                "僅標記重複（不刪除）｜適合訂單、記帳本",
+                                "自動去重合併｜適合客戶名單、通訊錄",
+                            ],
+                            index=0,
+                            key="single_dup_mode",
+                            label_visibility="collapsed",
                         )
+                        dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
+                        if dup_mode == 'mark':
+                            st.caption("✅ 保留所有原始列，僅新增「疑似重複」欄位供您判斷")
+                        else:
+                            st.caption("⚠️ 自動刪除完全相同的列，只保留第一筆")
+
+                        st.markdown("---")
                         opt_date = st.checkbox("標準化日期格式", value=True, key="single_date")
                         opt_currency = st.checkbox("清理貨幣 / 中文數字", value=True, key="single_curr")
                         opt_phone = st.checkbox("標準化電話格式", value=True, key="single_phone")
@@ -428,7 +445,7 @@ elif st.session_state['user_role'] == 'client':
                             clean_options = {
                                 'remove_non_data_rows': True,
                                 'clean_excel_errors': True,
-                                'flag_duplicates': opt_flag_dup,     # 只標記，不刪除
+                                'duplicate_mode': dup_mode,        # mark / drop
                                 'summary_row_action': summary_action_map[summary_action],
                                 'clean_columns': True,
                                 'standardize_columns': True,
@@ -684,13 +701,27 @@ elif st.session_state['user_role'] == 'client':
 
                                 st.caption(f"💡 將用「{join_key}」欄位，以「{base_file}」為基準做 {join_type.upper()} JOIN")
 
+                        # ==========================================
+                        # 重複資料處理模式（多檔合併）
+                        # ==========================================
+                        st.markdown("**🔁 重複資料處理方式**")
+                        dup_mode_label = st.radio(
+                            "選擇重複資料的處理方式",
+                            [
+                                "僅標記重複（不刪除）｜適合訂單、記帳本",
+                                "自動去重合併｜適合客戶名單、通訊錄",
+                            ],
+                            index=0,
+                            key="merge_dup_mode",
+                            label_visibility="collapsed",
+                        )
+                        dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
+                        if dup_mode == 'mark':
+                            st.caption("✅ 保留所有原始列，僅新增「疑似重複」欄位供您判斷")
+                        else:
+                            st.caption("⚠️ 自動刪除完全相同的列，只保留第一筆")
+
                         col1, col2 = st.columns(2)
-                        with col1:
-                            opt_flag_dup = st.checkbox(
-                                "標記疑似重複（只標記，不刪除）",
-                                value=True,
-                                key="merge_flag",
-                            )
                         with col2:
                             if use_join:
                                 opt_keep_source = True
@@ -707,7 +738,7 @@ elif st.session_state['user_role'] == 'client':
 
                         merge_options = {
                             'mode': 'join' if use_join else 'stack',
-                            'flag_duplicates': opt_flag_dup,
+                            'duplicate_mode': dup_mode,
                             'keep_source': opt_keep_source,
                         }
                         if use_join:
