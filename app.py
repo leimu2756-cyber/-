@@ -506,7 +506,22 @@ elif st.session_state['user_role'] == 'client':
                         col_a, col_b, col_c = st.columns(3)
                         base = os.path.splitext(uploaded_file.name)[0]
 
-                        csv_bytes = download_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                        # 把整數值轉回 int，避免 85.0
+                        def _clean_float_for_export(df):
+                            df_out = df.copy()
+                            for col in df_out.columns:
+                                if df_out[col].dtype == 'float64':
+                                    # 只轉換「整數值」的欄位
+                                    non_na = df_out[col].dropna()
+                                    if len(non_na) > 0 and (non_na % 1 == 0).all():
+                                        # 保留 NaN，其他轉 int
+                                        df_out[col] = df_out[col].apply(
+                                            lambda x: int(x) if pd.notna(x) and x == int(x) else x
+                                        )
+                            return df_out
+
+                        download_df_export = _clean_float_for_export(download_df)
+                        csv_bytes = download_df_export.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes,
                                               f"{base}_cleaned.csv", "text/csv",
