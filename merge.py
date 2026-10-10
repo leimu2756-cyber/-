@@ -78,8 +78,8 @@ def merge_files(files, options=None):
     """合併多個檔案"""
     options = options or {}
     mode = options.get('mode', 'stack')
-    flag_dup = options.get('flag_duplicates', False)
     keep_source = options.get('keep_source', True)
+    duplicate_mode = options.get('duplicate_mode', 'mark')  
 
     if not files:
         return {'error': '沒有檔案'}
@@ -108,7 +108,7 @@ def merge_files(files, options=None):
             clean_options = {
                 'remove_non_data_rows': True,
                 'clean_excel_errors': True,
-                'drop_duplicates': True,
+                'duplicate_mode': options.get('duplicate_mode', 'mark'), 
                 'summary_row_action': 'separate',
                 'clean_columns': True,
                 'trim_strings': True,
