@@ -216,6 +216,8 @@ class SmartCleaner:
             'columns_standardized': 0,
             'duplicates_flagged': 0,
             'duplicates_records': [],
+            'duplicates_dropped': 0,     # 新增：自動去重模式下刪除的列數
+            'duplicate_mode': options.get('duplicate_mode', 'mark'),
         }
 
         # 1. 非資料行
@@ -281,29 +283,44 @@ class SmartCleaner:
                 actions.append(f"✅ 處理 {cells} 個換行符號")
 
         # ==========================================================
-        # 5. 疑似重複標記（只標記，絕不刪除）
+        # 5. 重複處理（雙模式：mark / drop）
         # ==========================================================
-        if options.get('flag_duplicates', True):
-            try:
-                dup_cols = options.get('duplicate_keys', [])
-                if not dup_cols:
-                    # 用所有欄位（排除來源檔案與疑似重複本身）
-                    dup_cols = [
-                        c for c in df_clean.columns
-                        if c not in ('來源檔案', '疑似重複')
-                    ]
+        dup_mode = stats['duplicate_mode']
+        try:
+            dup_cols = options.get('duplicate_keys', [])
+            if not dup_cols:
+                dup_cols = [
+                    c for c in df_clean.columns
+                    if c not in ('來源檔案', '疑似重複')
+                ]
 
-                if dup_cols and len(df_clean) > 0:
-                    dup_mask = df_clean.duplicated(subset=dup_cols, keep=False)
-                    df_clean['疑似重複'] = dup_mask.apply(
+            if dup_cols and len(df_clean) > 0:
+                dup_mask_all = df_clean.duplicated(subset=dup_cols, keep=False)
+                total_dup = int(dup_mask_all.sum())
+
+                if dup_mode == 'drop':
+                    # 模式 B：自動去重合併（只保留第一筆）
+                    if total_dup > 0:
+                        before = len(df_clean)
+                        df_clean = df_clean.drop_duplicates(
+                            subset=dup_cols, keep='first'
+                        ).reset_index(drop=True)
+                        dropped = before - len(df_clean)
+                        stats['duplicates_dropped'] = dropped
+                        actions.append(
+                            f"✅ 自動去重合併：移除 {dropped} 列重複資料"
+                        )
+                    else:
+                        actions.append("✅ 未發現重複資料")
+                else:
+                    # 模式 A：僅標記（預設）
+                    df_clean['疑似重複'] = dup_mask_all.apply(
                         lambda x: '是' if x else '否'
                     )
-                    dup_count = int(dup_mask.sum())
-                    stats['duplicates_flagged'] = dup_count
+                    stats['duplicates_flagged'] = total_dup
 
-                    if dup_count > 0:
-                        # 收集重複群組，供異常清單用
-                        dup_indices = df_clean[dup_mask].index.tolist()
+                    if total_dup > 0:
+                        dup_indices = df_clean[dup_mask_all].index.tolist()
                         dup_records = []
                         for idx in dup_indices:
                             try:
@@ -323,12 +340,12 @@ class SmartCleaner:
                                 pass
                         stats['duplicates_records'] = dup_records
                         actions.append(
-                            f"⚠️ 發現 {dup_count} 筆疑似重複（僅標記，未刪除）"
+                            f"⚠️ 發現 {total_dup} 筆疑似重複（僅標記，未刪除）"
                         )
                     else:
                         actions.append("✅ 未發現重複資料")
-            except Exception as e:
-                actions.append(f"⚠️ 重複偵測失敗：{e}")
+        except Exception as e:
+            actions.append(f"⚠️ 重複偵測失敗：{e}")
 
         # 6. 欄位名稱清理
         if options.get('clean_columns', True):
@@ -359,11 +376,14 @@ class SmartCleaner:
             except Exception as e:
                 actions.append(f"⚠️ 欄位名稱標準化失敗：{e}")
 
-        # 7. 文字 trim（電話欄位保持字串）
+        # 7. 文字 trim
         if options.get('trim_strings', True):
             touched = 0
             try:
                 for col in df_clean.select_dtypes(include=['object']).columns:
+                    if col == '疑似重複':
+                        touched += 1
+                        continue
                     is_phone_col = False
                     try:
                         sample = df_clean[col].dropna().astype(str).head(20)
@@ -397,6 +417,8 @@ class SmartCleaner:
             invalid_date_records = []
             try:
                 for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
                     try:
                         ctype = cls.detect_column_type(df_clean[col])
                     except Exception:
@@ -467,6 +489,8 @@ class SmartCleaner:
             cn_fixed = 0
             try:
                 for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
                     col_has_cn = False
                     for v in df_clean[col].dropna().astype(str):
                         if has_chinese_number(v):
@@ -501,6 +525,8 @@ class SmartCleaner:
             unit_fixed = 0
             try:
                 for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
                     orig = df_clean[col].tolist()
                     conv = []
                     for v in orig:
@@ -524,6 +550,8 @@ class SmartCleaner:
             fixed = 0
             try:
                 for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
                     try:
                         ctype = cls.detect_column_type(df_clean[col])
                     except Exception:
@@ -544,6 +572,8 @@ class SmartCleaner:
         if options.get('normalize_email', True):
             try:
                 for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
                     try:
                         ctype = cls.detect_column_type(df_clean[col])
                     except Exception:
@@ -588,6 +618,8 @@ class SmartCleaner:
         results = []
         detail = df.drop(index=summary_indices, errors='ignore')
         for col in df.columns:
+            if col == '疑似重複':
+                continue
             summary_vals = []
             for idx in summary_indices:
                 try:
@@ -626,6 +658,8 @@ class SmartCleaner:
 
         # 1. 無效日期
         for col in df.columns:
+            if col == '疑似重複':
+                continue
             try:
                 s = df[col].dropna().astype(str)
                 invalid_mask = s.str.contains(
@@ -650,7 +684,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 2. 疑似重複
+        # 2. 疑似重複（僅在「標記模式」下顯示）
         if '疑似重複' in df.columns:
             try:
                 dup_mask = df['疑似重複'].astype(str).str.strip() == '是'
@@ -689,6 +723,8 @@ class SmartCleaner:
 
         # 3. 數值離群值 / 負數 / 非數值
         for col in df.columns:
+            if col == '疑似重複':
+                continue
             try:
                 ctype = cls.detect_column_type(df[col])
             except Exception:
@@ -760,6 +796,8 @@ class SmartCleaner:
 
             scores = []
             for col in df.columns:
+                if col == '疑似重複':
+                    continue
                 try:
                     ctype = cls.detect_column_type(df[col])
                     if ctype in cls.PATTERNS:
