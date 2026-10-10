@@ -22,6 +22,9 @@ from utils import build_dataframe
 from db import init_db, fetch_one, fetch_all, execute
 
 
+# ============================================================
+# 0. 設定
+# ============================================================
 ADMIN_EMAIL = '717804lin@gmail.com'
 
 ANNOUNCEMENT = {
@@ -84,7 +87,32 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 側邊欄
+# 工具函式：匯出前把整數值的 float 轉回 int
+# ============================================================
+def clean_float_for_export(df):
+    """
+    匯出前處理：
+    - 整欄都是「整數值」的 float 欄位 → 轉成 int（保持 NaN）
+    - 有小數的欄位不動
+    """
+    if df is None or len(df) == 0:
+        return df
+    df_out = df.copy()
+    for col in df_out.columns:
+        try:
+            if df_out[col].dtype == 'float64':
+                non_na = df_out[col].dropna()
+                if len(non_na) > 0 and (non_na % 1 == 0).all():
+                    df_out[col] = df_out[col].apply(
+                        lambda x: int(x) if pd.notna(x) and float(x) == int(x) else x
+                    )
+        except Exception:
+            pass
+    return df_out
+
+
+# ============================================================
+# 1. 側邊欄
 # ============================================================
 st.sidebar.title("🧹 AI 資料清理工作台")
 client_page = None
@@ -169,7 +197,7 @@ else:
 
 
 # ============================================================
-# 未登入首頁
+# 2. 未登入首頁
 # ============================================================
 if not st.session_state['logged_in']:
     if ANNOUNCEMENT['level'] == 'info':
@@ -218,7 +246,7 @@ if not st.session_state['logged_in']:
 
 
 # ============================================================
-# 管理員後台
+# 3. 管理員後台
 # ============================================================
 elif st.session_state['user_role'] == 'admin':
     st.title("🛠️ 管理員控制後台")
@@ -281,7 +309,7 @@ elif st.session_state['user_role'] == 'admin':
 
 
 # ============================================================
-# 客戶端
+# 4. 客戶端
 # ============================================================
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
@@ -447,7 +475,7 @@ elif st.session_state['user_role'] == 'client':
                             anomalies = SmartCleaner.detect_anomalies(
                                 df_clean,
                                 source_name=uploaded_file.name,
-                                total_check=total_check,      # 傳入總計檢查結果
+                                total_check=total_check,
                             )
                         except Exception as e:
                             st.error(f"清理失敗：{e}")
@@ -459,9 +487,7 @@ elif st.session_state['user_role'] == 'client':
                         progress.progress(100)
                         status.empty()
 
-                        # ========================================
-                        # 總計不一致警示（紅色）
-                        # ========================================
+                        # 總計不一致警示
                         if total_check:
                             for item in total_check:
                                 col_name = item.get('column', '')
@@ -487,15 +513,17 @@ elif st.session_state['user_role'] == 'client':
                                         f"重算總計：`{recalc:,}` ｜ "
                                         f"差異：`{diff_str}`"
                                     )
-                        # ========================================
-                        # 建立下載用的 DataFrame（附加彙總列）
-                        # ========================================
+
+                        # 建立下載用 DataFrame（附加彙總列）
                         download_df = df_clean.copy()
                         summary_rows = build_summary_rows(df_clean, total_check)
                         if summary_rows is not None and len(summary_rows) > 0:
                             download_df = pd.concat(
                                 [download_df, summary_rows], ignore_index=True
                             )
+
+                        # 匯出前把整數值的 float 轉回 int
+                        download_df_export = clean_float_for_export(download_df)
 
                         st.markdown("---")
                         st.markdown("## ✅ 清理完成！")
@@ -506,22 +534,9 @@ elif st.session_state['user_role'] == 'client':
                         col_a, col_b, col_c = st.columns(3)
                         base = os.path.splitext(uploaded_file.name)[0]
 
-                        # 把整數值轉回 int，避免 85.0
-                        def _clean_float_for_export(df):
-                            df_out = df.copy()
-                            for col in df_out.columns:
-                                if df_out[col].dtype == 'float64':
-                                    # 只轉換「整數值」的欄位
-                                    non_na = df_out[col].dropna()
-                                    if len(non_na) > 0 and (non_na % 1 == 0).all():
-                                        # 保留 NaN，其他轉 int
-                                        df_out[col] = df_out[col].apply(
-                                            lambda x: int(x) if pd.notna(x) and x == int(x) else x
-                                        )
-                            return df_out
-
-                        download_df_export = _clean_float_for_export(download_df)
-                        csv_bytes = download_df_export.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                        csv_bytes = download_df_export.to_csv(
+                            index=False, encoding='utf-8-sig'
+                        ).encode('utf-8-sig')
                         with col_a:
                             st.download_button("📄 下載 CSV", csv_bytes,
                                               f"{base}_cleaned.csv", "text/csv",
@@ -530,7 +545,7 @@ elif st.session_state['user_role'] == 'client':
 
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            download_df.to_excel(writer, index=False, sheet_name='清理後')
+                            download_df_export.to_excel(writer, index=False, sheet_name='清理後')
                             if summary_df is not None and len(summary_df) > 0:
                                 summary_df.to_excel(writer, index=False, sheet_name='原始總計')
                             if len(report_df) > 0:
@@ -560,7 +575,7 @@ elif st.session_state['user_role'] == 'client':
                                               use_container_width=True,
                                               key="single_dl_xlsx")
 
-                        json_bytes = download_df.to_json(
+                        json_bytes = download_df_export.to_json(
                             orient='records', force_ascii=False, indent=2
                         ).encode('utf-8')
                         with col_c:
@@ -578,9 +593,6 @@ elif st.session_state['user_role'] == 'client':
                         c3.metric("品質分數", f"{quality_after} / 100",
                                   delta=f"+{round(quality_after - quality_before, 1)}" if quality_after > quality_before else "0")
 
-                        # ========================================
-                        # 清理報告
-                        # ========================================
                         with st.expander("📊 清理報告", expanded=True):
                             rep = build_clean_report(stats, total_check, template_info)
                             if len(rep) > 0:
@@ -588,7 +600,6 @@ elif st.session_state['user_role'] == 'client':
                             else:
                                 st.info("沒有需要處理的地方。")
 
-                            # 總計摘要
                             if total_check:
                                 st.markdown("**📐 總計驗證**")
                                 tct = build_total_summary_table(total_check)
@@ -805,18 +816,7 @@ elif st.session_state['user_role'] == 'client':
                             merged = result['merged_df']
                             stats = result['stats']
 
-                            # ========================================
-                            # 合併後總計驗證
-                            # ========================================
-                            merged_total_check = []
-                            try:
-                                if '總計' in merged.astype(str).values:
-                                    pass
-                            except Exception:
-                                pass
-
-                            # 建立下載用 DataFrame（附加彙總，如果有）
-                            download_merged = merged.copy()
+                            download_merged = clean_float_for_export(merged.copy())
 
                             st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
 
@@ -840,12 +840,16 @@ elif st.session_state['user_role'] == 'client':
                                 total_rows = []
                                 for info in result['files_info']:
                                     for tc in info.get('total_check', []):
+                                        orig = tc['summary_value']
+                                        rec = tc['calculated_value']
+                                        d = round(rec - orig, 2)
+                                        d_str = f'+{d:,}' if d > 0 else f'{d:,}'
                                         total_rows.append({
                                             '檔案': info['file'],
                                             '欄位': tc['column'],
-                                            '原始總計': tc['summary_value'],
-                                            '重算總計': tc['calculated_value'],
-                                            '差額': tc['difference'],
+                                            '原始總計': orig,
+                                            '重算總計': rec,
+                                            '差額': d_str,
                                         })
                                 if total_rows:
                                     pd.DataFrame(total_rows).to_excel(writer, index=False, sheet_name='原始總計比對')
@@ -870,7 +874,6 @@ elif st.session_state['user_role'] == 'client':
                                     detail_parts.append(f"{fname}：{rows} 列")
                                 st.caption("📊 各檔清理後：" + " ｜ ".join(detail_parts))
 
-                            # 各檔總計比對
                             total_rows = []
                             for info in result['files_info']:
                                 for tc in info.get('total_check', []):
