@@ -1,7 +1,6 @@
 import os
 import io
 import time
-import functools
 import bcrypt
 import pandas as pd
 import streamlit as st
@@ -27,7 +26,6 @@ from db import init_db, fetch_one, fetch_all, execute
 # 0. 設定
 # ============================================================
 ADMIN_EMAIL = '717804lin@gmail.com'
-FEEDBACK_FORM_URL = ''   # 如果有 LINE / IG / 表單網址，填這裡
 
 ANNOUNCEMENT = {
     'title': '📢 公告',
@@ -63,6 +61,40 @@ st.markdown("""
     footer { visibility: hidden !important; }
     #MainMenu { visibility: hidden !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
+
+    .contact-box {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 24px;
+        border-radius: 12px;
+        color: white;
+        text-align: center;
+        margin: 16px 0;
+    }
+    .contact-box h3 {
+        color: white !important;
+        margin-top: 0;
+        margin-bottom: 8px;
+    }
+    .contact-box p {
+        color: #f0f0f0;
+        margin: 8px 0;
+        font-size: 15px;
+    }
+    .contact-box a {
+        display: inline-block;
+        background: white;
+        color: #4a3f8a !important;
+        padding: 12px 28px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: bold;
+        font-size: 16px;
+        margin-top: 12px;
+        transition: transform 0.2s;
+    }
+    .contact-box a:hover {
+        transform: scale(1.05);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,7 +121,7 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 工具函式：匯出格式處理
+# 工具函式
 # ============================================================
 def _format_cell_for_text(v):
     if v is None:
@@ -169,13 +201,45 @@ def df_to_json_bytes(df):
 
 
 # ============================================================
-# 友善錯誤處理（新增）
+# 聯絡區塊（合併客製化 + 反饋，只用郵箱）
 # ============================================================
+def show_contact_box(compact=False):
+    """
+    顯示聯絡區塊
+    compact=True 時顯示精簡版（給工作台頁面底部用）
+    compact=False 時顯示完整版（給獨立反饋頁面用）
+    """
+    if compact:
+        st.markdown("---")
+        st.info(
+            "💬 **需要客製化服務或遇到問題？**\n\n"
+            "如果你的 Excel 格式比較特殊、洗不乾淨，或需要客製化資料處理，"
+            "歡迎直接來信，我會**免費**為你評估。"
+        )
+        st.markdown(
+            f'<a href="mailto:{ADMIN_EMAIL}?subject=資料清理需求" '
+            f'target="_blank" style="display:inline-block;padding:10px 24px;'
+            f'background:#4CAF50;color:white;border-radius:6px;'
+            f'text-decoration:none;font-weight:bold;">'
+            f'📧 寄信到 {ADMIN_EMAIL}</a>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div class="contact-box">'
+            f'<h3>📮 需要客製化服務或遇到問題？</h3>'
+            f'<p>不論是許願新功能、反映使用問題、或需要客製化資料處理服務，</p>'
+            f'<p>都歡迎直接來信，我會親自回覆你。</p>'
+            f'<p style="font-size:13px;opacity:0.85;">客製化服務免費評估，不需事先付費</p>'
+            f'<a href="mailto:{ADMIN_EMAIL}?subject=資料清理需求" target="_blank">'
+            f'📧 {ADMIN_EMAIL}</a>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
 def show_friendly_error(error, context=""):
-    """
-    顯示友善的中文錯誤提示，隱藏英文 Traceback
-    只在展開區顯示技術細節
-    """
+    """友善中文錯誤提示"""
     st.error(
         "⚠️ **這個檔案的格式比較特殊，系統暫時無法自動解析。**\n\n"
         "請檢查：\n"
@@ -188,57 +252,18 @@ def show_friendly_error(error, context=""):
             st.code(f"情境：{context}\n\n{error}")
         else:
             st.code(str(error))
-    show_feedback_button()
-
-
-def show_feedback_button():
-    """
-    顯示「錯誤報修 / 格式許願」按鈕
-    放在錯誤提示下方或頁面底部
-    """
-    st.markdown("---")
-    st.info(
-        "💬 **軟體還在持續優化中！**\n\n"
-        "如果您的 Excel 格式比較特殊、洗不乾淨，歡迎點下方按鈕反饋。\n"
-        "我們會**免費**為您的格式增加專屬解析邏輯！"
-    )
-    col1, col2 = st.columns(2)
-    with col1:
-        mailto = f"mailto:{ADMIN_EMAIL}?subject=格式許願&body=我的檔案格式是..."
-        st.markdown(
-            f'<a href="{mailto}" target="_blank">'
-            f'<button style="width:100%;padding:10px;background:#4CAF50;color:white;'
-            f'border:none;border-radius:5px;cursor:pointer;font-size:14px;">'
-            f'📧 寄信反饋格式</button></a>',
-            unsafe_allow_html=True,
-        )
-    with col2:
-        if FEEDBACK_FORM_URL:
-            st.markdown(
-                f'<a href="{FEEDBACK_FORM_URL}" target="_blank">'
-                f'<button style="width:100%;padding:10px;background:#2196F3;color:white;'
-                f'border:none;border-radius:5px;cursor:pointer;font-size:14px;">'
-                f'💬 前往意見表單</button></a>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption("💡 登入後可從左側選單 →「💬 意見反饋」填寫表單")
+    show_contact_box(compact=True)
 
 
 def pre_validate_file(file):
-    """
-    上傳前格式檢查
-    回傳：(is_valid, error_message)
-    """
+    """上傳前格式檢查"""
     if file is None:
         return False, "沒有檔案"
 
-    # 副檔名
     name = file.name.lower()
     if not name.endswith(('.xlsx', '.xls', '.csv')):
         return False, "僅支援 .xlsx / .xls / .csv 格式"
 
-    # 檔案大小
     try:
         size = len(file.getvalue())
     except Exception:
@@ -330,7 +355,7 @@ else:
     st.sidebar.caption(f"角色：{'管理員' if st.session_state['user_role'] == 'admin' else '客戶'}")
     if st.session_state['user_role'] == 'client':
         client_page = st.sidebar.radio(
-            "功能選單", ["🧹 資料清理工作台", "💬 意見反饋"],
+            "功能選單", ["🧹 資料清理工作台", "📮 客製化與反饋"],
             key="client_nav_radio",
         )
     if st.sidebar.button("登出", key="logout_btn"):
@@ -361,9 +386,6 @@ if not st.session_state['logged_in']:
 4. **重複資料處理** — 可選「僅標記」或「自動去重」
 5. **資料分析** — 分類圓餅圖、每月收支、付款方式分布
 6. **隱私保護** — 資料僅在記憶體處理，密碼 bcrypt 雜湊儲存
-
-### 📮 需要客製化服務？
-直接來信：[{ADMIN_EMAIL}](mailto:{ADMIN_EMAIL})
 """)
 
     st.divider()
@@ -383,11 +405,10 @@ if not st.session_state['logged_in']:
 **6. 傳輸加密**：所有資料透過 HTTPS 加密傳輸，資料庫連線使用 SSL。
 
 **7. 登入安全**：閒置超過 30 分鐘會自動登出。
-
-若有任何隱私相關問題，請來信：""" + ADMIN_EMAIL)
+""")
 
     st.divider()
-    show_feedback_button()
+    show_contact_box(compact=False)
 
 
 # ============================================================
@@ -459,21 +480,37 @@ elif st.session_state['user_role'] == 'admin':
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
 
-    if client_page == "💬 意見反饋":
-        st.title("💬 意見反饋與客製化需求")
+    # ==========================================================
+    # 4-A. 客製化與反饋（合併成一個頁面）
+    # ==========================================================
+    if client_page == "📮 客製化與反饋":
+        st.title("📮 客製化服務與意見反饋")
+
         st.markdown(f"""
-有任何問題、想許願新功能、或需要 **客製化資料處理服務**？
+歡迎來到這裡 👋
 
-**方式一**：直接寄信到 👉 [{ADMIN_EMAIL}](mailto:{ADMIN_EMAIL}?subject=資料清理需求)
+不論你是：
+- 遇到 Excel 洗不乾淨、格式太特殊
+- 想許願新功能
+- 需要**客製化資料處理服務**
 
-**方式二**：填寫下方表單。
+都可以直接來信，我會親自回覆你。
 """)
+
+        show_contact_box(compact=False)
+
         st.divider()
+        st.markdown("### 📝 或填寫下方表單")
+        st.caption("填寫後我會在後台看到，並用你留的聯絡方式回覆你。")
+
         with st.form("feedback_form", clear_on_submit=True):
             subject = st.text_input("主旨", placeholder="例如：需要合併 50 個分店的月報表")
-            contact = st.text_input("你的聯絡方式")
-            message = st.text_area("需求描述", height=200,
-                                   placeholder="請描述：\n1. 你的資料長什麼樣子\n2. 你想達成什麼目標\n3. 目前怎麼手動處理")
+            contact = st.text_input("你的聯絡方式（Line / Email / 電話）")
+            message = st.text_area(
+                "需求描述",
+                height=200,
+                placeholder="請描述：\n1. 你的資料長什麼樣子\n2. 你想達成什麼目標\n3. 目前怎麼手動處理\n4. 期望什麼時候完成",
+            )
             if st.form_submit_button("📨 送出需求", type="primary"):
                 if not message.strip():
                     st.warning("請至少填寫需求描述。")
@@ -484,13 +521,14 @@ elif st.session_state['user_role'] == 'client':
                             "VALUES (:u, :s, :m, :c)",
                             {"u": current_user, "s": subject or '（無主旨）', "m": message, "c": contact},
                         )
-                        st.success("✅ 已送出！我會盡快回覆您。")
+                        st.success("✅ 已送出！我會盡快回覆你。")
                         st.balloons()
                     except Exception as e:
                         st.error(f"送出失敗：{e}")
-        st.divider()
-        show_feedback_button()
 
+    # ==========================================================
+    # 4-B. 資料清理工作台
+    # ==========================================================
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
@@ -521,16 +559,12 @@ elif st.session_state['user_role'] == 'client':
                     "系統無法自動計算。建議先在 Excel 打開檔案並存檔。"
                 )
             else:
-                # ========================================
-                # 上傳前檢查（新增）
-                # ========================================
                 is_valid, val_err = pre_validate_file(uploaded_file)
                 if not is_valid:
                     st.error(f"❌ {val_err}")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                     st.stop()
 
-                # 讀取
                 try:
                     with st.spinner("正在讀取檔案…"):
                         df_raw, load_err = load_any_file(uploaded_file)
@@ -540,12 +574,12 @@ elif st.session_state['user_role'] == 'client':
 
                 if load_err and df_raw is None:
                     st.error(f"❌ {load_err}")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                     st.stop()
 
                 if df_raw is None or len(df_raw) == 0:
                     st.error("⚠️ 檔案內容是空的，請確認上傳了正確的檔案。")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                     st.stop()
 
                 if load_err:
@@ -570,7 +604,7 @@ elif st.session_state['user_role'] == 'client':
 
                 if df is None or len(df) == 0:
                     st.error("⚠️ 解析後沒有資料，請確認檔案內容。")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                     st.stop()
 
                 st.caption(f"📊 清理前：{len(df)} 列 × {len(df.columns)} 欄")
@@ -838,7 +872,7 @@ elif st.session_state['user_role'] == 'client':
 
                     st.caption("🔒 所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
 
-                    show_feedback_button()
+                    show_contact_box(compact=True)
 
         # ====================================================
         # Tab 2：多檔合併
@@ -887,7 +921,7 @@ elif st.session_state['user_role'] == 'client':
 
                 if not files_data:
                     st.error("沒有可處理的檔案")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                 else:
                     try:
                         strategy_info = detect_merge_strategy(files_data)
@@ -1009,7 +1043,7 @@ elif st.session_state['user_role'] == 'client':
 
                         if result.get('error'):
                             st.error(f"合併失敗：{result['error']}")
-                            show_feedback_button()
+                            show_contact_box(compact=True)
                         else:
                             merged = result['merged_df']
                             stats = result['stats']
@@ -1104,7 +1138,7 @@ elif st.session_state['user_role'] == 'client':
                                 with st.expander("⚠️ 異常清單", expanded=False):
                                     st.dataframe(pd.DataFrame(result['anomalies']), use_container_width=True)
 
-                            show_feedback_button()
+                            show_contact_box(compact=True)
 
         # ====================================================
         # Tab 3：資料分析
@@ -1125,7 +1159,7 @@ elif st.session_state['user_role'] == 'client':
                 is_valid, val_err = pre_validate_file(analytics_file)
                 if not is_valid:
                     st.error(f"❌ {val_err}")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                     st.stop()
 
                 try:
@@ -1137,7 +1171,7 @@ elif st.session_state['user_role'] == 'client':
 
                 if df_a is None:
                     st.error(f"讀取失敗：{err}")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
                 else:
                     try:
                         first_valid = None
@@ -1158,7 +1192,7 @@ elif st.session_state['user_role'] == 'client':
                         render_analytics(df_a)
                     except Exception as e:
                         show_friendly_error(e, context="資料分析")
-                    show_feedback_button()
+                    show_contact_box(compact=True)
 
         if st.session_state.get('history'):
             with st.sidebar.expander("📜 最近處理紀錄", expanded=False):
