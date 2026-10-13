@@ -22,9 +22,6 @@ from utils import build_dataframe
 from db import init_db, fetch_one, fetch_all, execute
 
 
-# ============================================================
-# 0. 設定
-# ============================================================
 ADMIN_EMAIL = '717804lin@gmail.com'
 
 ANNOUNCEMENT = {
@@ -70,16 +67,8 @@ st.markdown("""
         text-align: center;
         margin: 16px 0;
     }
-    .contact-box h3 {
-        color: white !important;
-        margin-top: 0;
-        margin-bottom: 8px;
-    }
-    .contact-box p {
-        color: #f0f0f0;
-        margin: 8px 0;
-        font-size: 15px;
-    }
+    .contact-box h3 { color: white !important; margin-top: 0; margin-bottom: 8px; }
+    .contact-box p { color: #f0f0f0; margin: 8px 0; font-size: 15px; }
     .contact-box a {
         display: inline-block;
         background: white;
@@ -90,11 +79,8 @@ st.markdown("""
         font-weight: bold;
         font-size: 16px;
         margin-top: 12px;
-        transition: transform 0.2s;
     }
-    .contact-box a:hover {
-        transform: scale(1.05);
-    }
+    .contact-box a:hover { transform: scale(1.05); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -121,9 +107,40 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 工具函式
+# 核心工具：把 df 強制轉成「純 Python 二維 list」
+# 完全避開 pandas 的 Series 和 index 對齊問題
 # ============================================================
-def _format_cell_for_text(v):
+def df_to_matrix(df):
+    """
+    把 DataFrame 轉成 (headers, rows) 兩個 list
+    headers: list of str
+    rows: list of list（每個 cell 是原始 Python 值）
+    完全用位置存取，不用任何 Series
+    """
+    if df is None:
+        return [], []
+
+    headers = [str(c) for c in df.columns]
+
+    rows = []
+    n_rows = len(df)
+    n_cols = len(df.columns)
+
+    for i in range(n_rows):
+        row = []
+        for j in range(n_cols):
+            try:
+                v = df.iat[i, j]  # 用位置存取，不用欄位名
+            except Exception:
+                v = ''
+            row.append(v)
+        rows.append(row)
+
+    return headers, rows
+
+
+def format_cell(v):
+    """單一格轉字串"""
     if v is None:
         return ''
     try:
@@ -142,95 +159,71 @@ def _format_cell_for_text(v):
     return str(v)
 
 
+def csv_escape(s):
+    """CSV 轉義"""
+    if ',' in s or '"' in s or '\n' in s or '\r' in s:
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
 def df_to_csv_bytes(df):
-    """自訂 CSV 匯出：逐格處理，避免 85.0 與第一行異常"""
+    """CSV 匯出：完全用位置存取"""
+    headers, rows = df_to_matrix(df)
     lines = []
-    # 表頭
-    header_cells = []
-    for c in df.columns:
-        s = str(c)
-        if ',' in s or '"' in s or '\n' in s:
-            s = '"' + s.replace('"', '""') + '"'
-        header_cells.append(s)
-    lines.append(','.join(header_cells))
-
-    # 內容：用 .values 完全避開 index 對齊問題
-    try:
-        data_matrix = df.values  # numpy 2D array
-    except Exception:
-        data_matrix = None
-
-    if data_matrix is not None:
-        for i in range(data_matrix.shape[0]):
-            cells = []
-            for j in range(data_matrix.shape[1]):
-                v = data_matrix[i, j]
-                s = _format_cell_for_text(v)
-                if ',' in s or '"' in s or '\n' in s:
-                    s = '"' + s.replace('"', '""') + '"'
-                cells.append(s)
-            lines.append(','.join(cells))
-    else:
-        # 備用：逐行處理
-        for idx in range(len(df)):
-            cells = []
-            for col in df.columns:
-                v = df.iloc[idx][col]
-                s = _format_cell_for_text(v)
-                if ',' in s or '"' in s or '\n' in s:
-                    s = '"' + s.replace('"', '""') + '"'
-                cells.append(s)
-            lines.append(','.join(cells))
-
+    lines.append(','.join(csv_escape(h) for h in headers))
+    for row in rows:
+        cells = [csv_escape(format_cell(v)) for v in row]
+        lines.append(','.join(cells))
     return ('\n'.join(lines)).encode('utf-8-sig')
 
+
 def df_to_excel_multi(sheets_dict):
+    """Excel 匯出：多工作表"""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         for name, df in sheets_dict.items():
             if df is None or len(df) == 0:
                 continue
-            df_out = df.copy()
-            for col in df_out.columns:
-                try:
-                    new_vals = []
-                    for v in df_out[col].values:
-                        if isinstance(v, float) and pd.notna(v) and v == int(v):
-                            new_vals.append(int(v))
-                        else:
-                            new_vals.append(v)
-                    df_out[col] = pd.Series(new_vals, index=df_out.index)
-                except Exception:
-                    pass
-            df_out.to_excel(writer, index=False, sheet_name=name[:31])
+            headers, rows = df_to_matrix(df)
+
+            # 逐格轉型（整數 float → int）
+            new_rows = []
+            for row in rows:
+                new_row = []
+                for v in row:
+                    if isinstance(v, float) and pd.notna(v) and v == int(v):
+                        new_row.append(int(v))
+                    else:
+                        new_row.append(v)
+                new_rows.append(new_row)
+
+            df_out = pd.DataFrame(new_rows, columns=headers)
+            df_out.to_excel(writer, index=False, sheet_name=str(name)[:31])
     return buffer.getvalue()
 
 
 def df_to_json_bytes(df):
-    df_out = df.copy()
-    for col in df_out.columns:
-        try:
-            new_vals = []
-            for v in df_out[col].values:
-                if isinstance(v, float) and pd.notna(v) and v == int(v):
-                    new_vals.append(int(v))
-                else:
-                    new_vals.append(v)
-            df_out[col] = pd.Series(new_vals, index=df_out.index)
-        except Exception:
-            pass
-    return df_out.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
+    """JSON 匯出：完全用位置存取"""
+    headers, rows = df_to_matrix(df)
+    records = []
+    for row in rows:
+        rec = {}
+        for h, v in zip(headers, row):
+            if isinstance(v, float) and pd.notna(v) and v == int(v):
+                rec[h] = int(v)
+            elif pd.isna(v):
+                rec[h] = None
+            else:
+                rec[h] = v
+        records.append(rec)
+    import json
+    return json.dumps(records, ensure_ascii=False, indent=2).encode('utf-8')
 
 
 # ============================================================
-# 聯絡區塊（合併客製化 + 反饋，只用郵箱）
+# 聯絡區塊
 # ============================================================
 def show_contact_box(compact=False):
-    """
-    顯示聯絡區塊
-    compact=True 時顯示精簡版（給工作台頁面底部用）
-    compact=False 時顯示完整版（給獨立反饋頁面用）
-    """
     if compact:
         st.markdown("---")
         st.info(
@@ -261,7 +254,6 @@ def show_contact_box(compact=False):
 
 
 def show_friendly_error(error, context=""):
-    """友善中文錯誤提示"""
     st.error(
         "⚠️ **這個檔案的格式比較特殊，系統暫時無法自動解析。**\n\n"
         "請檢查：\n"
@@ -278,25 +270,19 @@ def show_friendly_error(error, context=""):
 
 
 def pre_validate_file(file):
-    """上傳前格式檢查"""
     if file is None:
         return False, "沒有檔案"
-
     name = file.name.lower()
     if not name.endswith(('.xlsx', '.xls', '.csv')):
         return False, "僅支援 .xlsx / .xls / .csv 格式"
-
     try:
         size = len(file.getvalue())
     except Exception:
         size = 0
-
     if size == 0:
         return False, "檔案是空的（0 bytes）"
-
     if size > SINGLE_FILE_LIMIT:
         return False, f"檔案過大（{format_bytes(size)}），請縮小至 50MB 以內"
-
     return True, None
 
 
@@ -502,12 +488,8 @@ elif st.session_state['user_role'] == 'admin':
 elif st.session_state['user_role'] == 'client':
     current_user = st.session_state['username']
 
-    # ==========================================================
-    # 4-A. 客製化與反饋（合併成一個頁面）
-    # ==========================================================
     if client_page == "📮 客製化與反饋":
         st.title("📮 客製化服務與意見反饋")
-
         st.markdown(f"""
 歡迎來到這裡 👋
 
@@ -518,9 +500,7 @@ elif st.session_state['user_role'] == 'client':
 
 都可以直接來信，我會親自回覆你。
 """)
-
         show_contact_box(compact=False)
-
         st.divider()
         st.markdown("### 📝 或填寫下方表單")
         st.caption("填寫後我會在後台看到，並用你留的聯絡方式回覆你。")
@@ -529,8 +509,7 @@ elif st.session_state['user_role'] == 'client':
             subject = st.text_input("主旨", placeholder="例如：需要合併 50 個分店的月報表")
             contact = st.text_input("你的聯絡方式（Line / Email / 電話）")
             message = st.text_area(
-                "需求描述",
-                height=200,
+                "需求描述", height=200,
                 placeholder="請描述：\n1. 你的資料長什麼樣子\n2. 你想達成什麼目標\n3. 目前怎麼手動處理\n4. 期望什麼時候完成",
             )
             if st.form_submit_button("📨 送出需求", type="primary"):
@@ -548,9 +527,6 @@ elif st.session_state['user_role'] == 'client':
                     except Exception as e:
                         st.error(f"送出失敗：{e}")
 
-    # ==========================================================
-    # 4-B. 資料清理工作台
-    # ==========================================================
     else:
         st.title(f"👋 歡迎回來，{current_user}")
 
@@ -758,9 +734,7 @@ elif st.session_state['user_role'] == 'client':
 
                     st.markdown("---")
                     st.markdown("## ✅ 清理完成！")
-                    st.caption(
-                        "💡 下載檔案已包含明細資料 + 下方彙總列（原始總計、重算總計、差異）"
-                    )
+                    st.caption("💡 下載檔案已包含明細資料 + 下方彙總列")
 
                     col_a, col_b, col_c = st.columns(3)
                     base = os.path.splitext(uploaded_file.name)[0]
@@ -893,7 +867,6 @@ elif st.session_state['user_role'] == 'client':
                         pass
 
                     st.caption("🔒 所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
-
                     show_contact_box(compact=True)
 
         # ====================================================
@@ -918,7 +891,7 @@ elif st.session_state['user_role'] == 'client':
                     except Exception:
                         pass
                 if total_size > TOTAL_UPLOAD_LIMIT:
-                    st.warning(f"⚠️ 總上傳大小 {format_bytes(total_size)} 超過 200MB，建議分批處理")
+                    st.warning(f"⚠️ 總上傳大小 {format_bytes(total_size)} 超過 200MB")
 
                 try:
                     with st.spinner("正在讀取所有檔案…"):
@@ -968,9 +941,7 @@ elif st.session_state['user_role'] == 'client':
                         mode_options = ["垂直堆疊（上下接起來）", "水平關聯（用共同欄位接起來）"]
                         default_idx = 1 if default_mode == 'join' else 0
                         merge_mode = st.radio(
-                            "合併方式",
-                            mode_options,
-                            index=default_idx,
+                            "合併方式", mode_options, index=default_idx,
                             key="merge_mode_radio",
                         )
 
@@ -995,8 +966,7 @@ elif st.session_state['user_role'] == 'client':
                                      "INNER JOIN（只保留兩邊都有的）",
                                      "RIGHT JOIN（保留右邊全部）",
                                      "FULL OUTER JOIN（兩邊都保留）"],
-                                    index=0,
-                                    key="merge_join_type",
+                                    index=0, key="merge_join_type",
                                 )
                                 join_type_map = {
                                     "LEFT JOIN（保留左邊全部）": "left",
@@ -1009,21 +979,16 @@ elif st.session_state['user_role'] == 'client':
                                 base_file = st.selectbox(
                                     "以哪個檔案為基準（LEFT/RIGHT JOIN 用）",
                                     [f['name'] for f in files_data],
-                                    index=0,
-                                    key="merge_base_file",
+                                    index=0, key="merge_base_file",
                                 )
-
                                 st.caption(f"💡 將用「{join_key}」欄位，以「{base_file}」為基準做 {join_type.upper()} JOIN")
 
                         st.markdown("**🔁 重複資料處理方式**")
                         dup_mode_label = st.radio(
                             "選擇重複資料的處理方式",
-                            [
-                                "僅標記重複（不刪除）｜適合訂單、記帳本",
-                                "自動去重合併｜適合客戶名單、通訊錄",
-                            ],
-                            index=0,
-                            key="merge_dup_mode",
+                            ["僅標記重複（不刪除）｜適合訂單、記帳本",
+                             "自動去重合併｜適合客戶名單、通訊錄"],
+                            index=0, key="merge_dup_mode",
                             label_visibility="collapsed",
                         )
                         dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
@@ -1039,7 +1004,6 @@ elif st.session_state['user_role'] == 'client':
                     if st.button("🚀 開始合併", type="primary", key="merge_btn"):
                         progress = st.progress(0)
                         status = st.empty()
-
                         status.text("步驟 1/2：清理各檔案中…")
                         progress.progress(40)
 
