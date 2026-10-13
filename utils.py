@@ -229,11 +229,6 @@ def validate_date(y, mo, d):
 def convert_minguo_to_western(value):
     """
     民國年 / 各種日期格式 → YYYY-MM-DD（或 YYYY-MM-DD HH:MM）
-    支援：
-      2026/1/7、2026-01-07、115/1/7、115-01-07、1/7
-      民國115年1月7日、115年1月7日、2026年1月7日
-      2026/02/25 18:28、2026-02-25 18:28、115/02/25 18:28
-      2026/02/25 18:28:35
     """
     if pd.isna(value):
         return value
@@ -241,7 +236,7 @@ def convert_minguo_to_western(value):
     if s == '' or s.lower() == 'nan':
         return np.nan
 
-    # ============ 日期 + 時間（優先處理）============
+    # ============ 日期 + 時間 ============
 
     # 2026/02/25 18:28 或 2026-02-25 18:28（含秒選用）
     m = re.match(
@@ -409,61 +404,27 @@ def is_summary_row(row):
     return False
 
 
-def is_header_row(row):
+def is_non_data_row(row):
     try:
-        vals = list(row.values)
+        values = [v for v in row.values if pd.notna(v)]
     except Exception:
         return False
-    non_empty = [
-        v for v in vals
-        if pd.notna(v) and str(v).strip() not in ('', 'nan', 'None')
-    ]
-    if not non_empty or not vals:
+    if len(values) == 0:
+        return True
+    try:
+        row_str = ' '.join(str(v) for v in values)
+    except Exception:
         return False
-    if len(non_empty) / len(vals) < 0.5:
-        return False
+    cleaned = row_str.replace(',', '').replace(' ', '').replace('\t', '').strip()
+    if cleaned == '':
+        return True
+    if len(cleaned) <= 1 and not cleaned.isalnum():
+        return True
+    for kw in NON_DATA_KEYWORDS:
+        if kw in row_str:
+            return True
+    return False
 
-    # ==========================================================
-    # 新增：如果任何單元格看起來像「數據」（數字 / 日期 / Email / URL），
-    # 這一行就是資料列，不是表頭
-    # ==========================================================
-    for v in non_empty:
-        s = str(v).strip()
-
-        # 看起來像電話？（開頭 0 的數字，可能含橫線、空白、括號）
-        digits_only = re.sub(r'\D', '', s)
-        if digits_only and len(digits_only) >= 8 and len(digits_only) <= 11:
-            # 且原本字串不太長（避免誤判「2026年3月15日」這種長字串）
-            if len(s) <= 20:
-                return False
-
-        # 看起來像日期？（YYYY/MM/DD 或 YYYY-MM-DD 或民國）
-        if re.match(r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}', s):
-            return False
-
-        # 看起來像純數字（可能含千分位）？
-        cleaned_num = s.replace(',', '').replace('.', '').replace('-', '').replace(' ', '').strip()
-        if cleaned_num.isdigit() and len(s) <= 15:
-            return False
-
-        # 看起來像 Email？
-        if '@' in s and '.' in s:
-            return False
-
-        # 看起來像 URL？
-        if s.lower().startswith(('http://', 'https://')):
-            return False
-
-    # ==========================================================
-    # 剩下的檢查（文字比例）
-    # ==========================================================
-    text_count = 0
-    for v in non_empty:
-        cleaned = (str(v).replace('.', '').replace('-', '')
-                   .replace(',', '').replace('/', '').replace(' ', '').strip())
-        if cleaned and not cleaned.isdigit():
-            text_count += 1
-    return text_count >= len(non_empty) * 0.6
 
 def format_bytes(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -488,10 +449,16 @@ def is_garbage_row(row):
 
 
 def is_header_row(row):
+    """
+    判斷是否為表頭列。
+    關鍵防禦：如果任何單元格看起來像「數據」（電話 / 日期 / 純數字 / Email / URL），
+    就判斷為資料列，不是表頭。
+    """
     try:
         vals = list(row.values)
     except Exception:
         return False
+
     non_empty = [
         v for v in vals
         if pd.notna(v) and str(v).strip() not in ('', 'nan', 'None')
@@ -500,6 +467,37 @@ def is_header_row(row):
         return False
     if len(non_empty) / len(vals) < 0.5:
         return False
+
+    # ==========================================================
+    # 防禦：任何單元格像「數據」就否決「表頭」判斷
+    # ==========================================================
+    for v in non_empty:
+        s = str(v).strip()
+
+        # 像電話（8-11 位數字，允許橫線、空白、括號）
+        digits_only = re.sub(r'\D', '', s)
+        if digits_only and 8 <= len(digits_only) <= 11 and len(s) <= 20:
+            return False
+
+        # 像日期（YYYY/MM/DD 或 YYYY-MM-DD 或民國）
+        if re.match(r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}', s):
+            return False
+
+        # 像純數字（可含千分位、小數點）
+        cleaned_num = (s.replace(',', '').replace('.', '')
+                       .replace('-', '').replace(' ', '').strip())
+        if cleaned_num.isdigit() and len(s) <= 15:
+            return False
+
+        # 像 Email
+        if '@' in s and '.' in s:
+            return False
+
+        # 像 URL
+        if s.lower().startswith(('http://', 'https://')):
+            return False
+
+    # 剩下的用文字比例判斷
     text_count = 0
     for v in non_empty:
         cleaned = (str(v).replace('.', '').replace('-', '')
@@ -514,7 +512,6 @@ def build_dataframe(df_raw, skip_n=0, header_n=0, auto_mode=True):
         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
     if auto_mode:
-        # 移除垃圾行
         garbage_idx = [
             i for i in range(len(df_raw))
             if is_garbage_row(df_raw.iloc[i])
@@ -527,40 +524,6 @@ def build_dataframe(df_raw, skip_n=0, header_n=0, auto_mode=True):
             if is_header_row(df_raw.iloc[i]):
                 header_idx = i
                 break
-
-        if header_idx is not None:
-            # 額外防禦：檢查「表頭候選」和「下一行」的相似度
-            # 如果下一行和表頭候選「型態非常相似」，代表第一行是資料而不是表頭
-            if header_idx + 1 < len(df_raw):
-                cur_row = df_raw.iloc[header_idx]
-                next_row = df_raw.iloc[header_idx + 1]
-
-                # 比較兩行的「型態指紋」（是否為數字/文字/日期）
-                def type_fingerprint(val):
-                    if pd.isna(val):
-                        return 'empty'
-                    s = str(val).strip()
-                    if not s:
-                        return 'empty'
-                    cleaned = s.replace('-', '').replace('/', '').replace('.', '').replace(',', '').replace(' ', '')
-                    if cleaned.isdigit():
-                        return 'number'
-                    # 看是否像日期
-                    if re.match(r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}', s):
-                        return 'date'
-                    return 'text'
-
-                cur_fp = [type_fingerprint(v) for v in cur_row.values]
-                next_fp = [type_fingerprint(v) for v in next_row.values]
-
-                # 如果兩行型態指紋「一模一樣」，表頭候選其實是資料
-                if cur_fp == next_fp and len(cur_fp) > 0:
-                    # 額外檢查：表頭通常會有「欄位名稱」的重複性
-                    # 例如「日期」「金額」這種短詞；資料行通常不會每個 cell 都是短詞
-                    # 這裡用「平均字元長度」判斷
-                    cur_avg_len = sum(len(str(v)) for v in cur_row.values if pd.notna(v)) / max(len(cur_row), 1)
-                    if cur_avg_len > 4:  # 平均長度 > 4 字元，不是典型表頭
-                        header_idx = None
 
         if header_idx is not None:
             df = df_raw.copy()
