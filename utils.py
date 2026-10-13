@@ -44,9 +44,6 @@ UNIT_SUFFIXES = ['分', '級', '级', '歲', '岁', '個', '个', '件', '顆', 
                  '次', '筆', '笔', '年', '月', '日', '小時', '小时']
 
 
-# ==========================================================
-# 標準欄位名稱與同義詞對照表
-# ==========================================================
 STANDARD_COLUMNS = {
     '日期': ['日期', '交易日期', '交易日', '交易時間', '交易时间', '下單日', '下單日期',
              '下单日期', '訂單日期', '订单日期', '記帳日', '時間', '时间',
@@ -77,28 +74,21 @@ STANDARD_COLUMNS = {
 
 
 def standardize_columns(df, enabled=True):
-    """
-    將同義欄位名稱統一為標準名稱
-    例如：「交易日期」→「日期」、「品項」→「產品」
-    避免衝突：若標準名稱已被使用，則不重複改名
-    """
     if not enabled or df is None or len(df.columns) == 0:
         return df
 
     rename_map = {}
     used_std_names = set()
 
-    # 第一輪：先標記已經使用標準名稱的欄位
     for col in df.columns:
         col_str = str(col).strip()
         if col_str in STANDARD_COLUMNS:
             used_std_names.add(col_str)
 
-    # 第二輪：把同義詞欄位改名
     for col in df.columns:
         col_str = str(col).strip()
         if col_str in STANDARD_COLUMNS:
-            continue  # 已是標準名
+            continue
         if col in rename_map:
             continue
         for std_name, synonyms in STANDARD_COLUMNS.items():
@@ -238,16 +228,73 @@ def validate_date(y, mo, d):
 
 def convert_minguo_to_western(value):
     """
-    民國年 / 各種日期格式 → YYYY-MM-DD
+    民國年 / 各種日期格式 → YYYY-MM-DD（或 YYYY-MM-DD HH:MM）
     支援：
       2026/1/7、2026-01-07、115/1/7、115-01-07、1/7
       民國115年1月7日、115年1月7日、2026年1月7日
+      2026/02/25 18:28、2026-02-25 18:28、115/02/25 18:28
+      2026/02/25 18:28:35
     """
     if pd.isna(value):
         return value
     s = str(value).strip()
     if s == '' or s.lower() == 'nan':
         return np.nan
+
+    # ============ 日期 + 時間（優先處理）============
+
+    # 2026/02/25 18:28 或 2026-02-25 18:28（含秒選用）
+    m = re.match(
+        r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$',
+        s
+    )
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        h, mi = int(m.group(4)), int(m.group(5))
+        sec = m.group(6)
+        result = validate_date(y, mo, d)
+        if '無效' in result:
+            return result
+        time_str = f"{h:02d}:{mi:02d}"
+        if sec:
+            time_str += f":{int(sec):02d}"
+        return f"{result} {time_str}"
+
+    # 115/02/25 18:28 或 115-02-25 18:28
+    m = re.match(
+        r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$',
+        s
+    )
+    if m:
+        y_raw = int(m.group(1))
+        if 1 <= y_raw <= 200:
+            y = y_raw + 1911
+            mo, d = int(m.group(2)), int(m.group(3))
+            h, mi = int(m.group(4)), int(m.group(5))
+            sec = m.group(6)
+            result = validate_date(y, mo, d)
+            if '無效' in result:
+                return result
+            time_str = f"{h:02d}:{mi:02d}"
+            if sec:
+                time_str += f":{int(sec):02d}"
+            return f"{result} {time_str}"
+
+    # 民國115年2月25日 18:28
+    m = re.match(
+        r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s+(\d{1,2}):(\d{2})',
+        s
+    )
+    if m:
+        y = int(m.group(1)) + 1911
+        mo, d = int(m.group(2)), int(m.group(3))
+        h, mi = int(m.group(4)), int(m.group(5))
+        result = validate_date(y, mo, d)
+        if '無效' in result:
+            return result
+        return f"{result} {h:02d}:{mi:02d}"
+
+    # ============ 純日期 ============
 
     # 只有月/日（1/7）
     m = re.match(r'^(\d{1,2})[\-/](\d{1,2})$', s)
@@ -256,31 +303,31 @@ def convert_minguo_to_western(value):
         if 1 <= mo <= 12 and 1 <= d <= 31:
             return validate_date(datetime.now().year, mo, d)
 
-    # 民國115年1月7日
+    # 民國115年5月25日
     m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         return validate_date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3)))
 
-    # 2026年1月7日（4 位西元年，支援 1 或 2 位月日，含 01）
+    # 2026年1月7日
     m = re.match(r'^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         return validate_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
-    # 115年1月7日（2~3 位年份，視為民國）
+    # 115年1月7日
     m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         y = int(m.group(1))
         if 1 <= y <= 200:
             return validate_date(y + 1911, int(m.group(2)), int(m.group(3)))
 
-    # 115/1/7 或 115-1-7（三位數年視為民國）
+    # 115/1/7 或 115-1-7
     m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
     if m:
         y = int(m.group(1))
         if 1 <= y <= 200:
             return validate_date(y + 1911, int(m.group(2)), int(m.group(3)))
 
-    # 四位西元年（2026/1/7 或 2026-01-07）
+    # 四位西元年
     m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
     if m:
         return validate_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
