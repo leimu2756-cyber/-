@@ -199,6 +199,26 @@ class SmartCleaner:
     def clean_dataframe(cls, df, options=None):
         options = options or {}
         df_clean = df.copy().reset_index(drop=True)
+
+        # ========================================================
+        # 防禦：如果第一行是表頭殘留（第一欄的值等於欄位名稱），移除它
+        # ========================================================
+        try:
+            if len(df_clean) > 0 and len(df_clean.columns) > 0:
+                first_row = df_clean.iloc[0]
+                match_count = 0
+                check_cols = min(len(df_clean.columns), 5)
+                for i in range(check_cols):
+                    col_name = str(df_clean.columns[i]).strip()
+                    cell_val = str(first_row.iloc[i]).strip()
+                    if col_name == cell_val and col_name != '':
+                        match_count += 1
+                # 如果前 5 欄中有 3 欄以上與欄位名稱相同，視為表頭殘留
+                if match_count >= 3:
+                    df_clean = df_clean.iloc[1:].reset_index(drop=True)
+        except Exception:
+            pass
+
         actions = []
         stats = {
             'rows_removed_non_data': 0,
@@ -330,13 +350,22 @@ class SmartCleaner:
                         actions.append(f"✅ 自動去重合併：移除 {dropped} 列重複資料")
                     else:
                         actions.append("✅ 未發現重複資料")
-                else:
-                    # 模式 A：僅標記（用穩健的寫法）
-                    df_clean['疑似重複'] = '否'
-                    dup_indices = df_clean[dup_mask_all].index.tolist()
-                    if dup_indices:
-                        df_clean.loc[dup_indices, '疑似重複'] = '是'
 
+                else:
+                    # 模式 A：僅標記（最穩健寫法）
+                    # 先移除舊欄位（如果存在）
+                    if '疑似重複' in df_clean.columns:
+                        df_clean = df_clean.drop(columns=['疑似重複'])
+                    df_clean = df_clean.reset_index(drop=True)
+
+                    # 逐行賦值，確保每一行都被處理
+                    df_clean['疑似重複'] = '否'
+                    for idx in df_clean.index:
+                        try:
+                            if dup_mask_all.get(idx, False):
+                                df_clean.at[idx, '疑似重複'] = '是'
+                        except Exception:
+                            pass
                     stats['duplicates_flagged'] = total_dup
 
                     if total_dup > 0:
