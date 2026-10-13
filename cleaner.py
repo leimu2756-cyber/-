@@ -88,7 +88,6 @@ class SmartCleaner:
         if len(s_str) == 0:
             return 'empty'
 
-        # 電話（寬鬆判斷，優先處理）
         try:
             phone_count = s_str.apply(is_phone_like).sum()
             if phone_count / len(s_str) >= 0.5:
@@ -96,7 +95,6 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # 中文數字 → 視為數字
         try:
             cn_count = s_str.apply(has_chinese_number).sum()
             if cn_count / len(s_str) >= 0.3:
@@ -116,7 +114,6 @@ class SmartCleaner:
         except Exception:
             pass
 
-        # 貨幣
         try:
             cn_money = s_str.apply(
                 lambda x: any(ind in x for ind in CN_MONEY_INDICATORS)
@@ -199,26 +196,6 @@ class SmartCleaner:
     def clean_dataframe(cls, df, options=None):
         options = options or {}
         df_clean = df.copy().reset_index(drop=True)
-
-        # ========================================================
-        # 防禦：如果第一行是表頭殘留（第一欄的值等於欄位名稱），移除它
-        # ========================================================
-        try:
-            if len(df_clean) > 0 and len(df_clean.columns) > 0:
-                first_row = df_clean.iloc[0]
-                match_count = 0
-                check_cols = min(len(df_clean.columns), 5)
-                for i in range(check_cols):
-                    col_name = str(df_clean.columns[i]).strip()
-                    cell_val = str(first_row.iloc[i]).strip()
-                    if col_name == cell_val and col_name != '':
-                        match_count += 1
-                # 如果前 5 欄中有 3 欄以上與欄位名稱相同，視為表頭殘留
-                if match_count >= 3:
-                    df_clean = df_clean.iloc[1:].reset_index(drop=True)
-        except Exception:
-            pass
-
         actions = []
         stats = {
             'rows_removed_non_data': 0,
@@ -269,38 +246,51 @@ class SmartCleaner:
                 stats['excel_errors_fixed'] = total
                 actions.append(f"✅ 清理 {total} 個 Excel 錯誤值")
 
-        # 3. 全形 → 半形
+        # 3. 全形 → 半形（逐行）
         if options.get('normalize_width', True):
             cells = 0
             try:
-                for col in df_clean.select_dtypes(include=['object']).columns:
-                    orig = df_clean[col].astype(str)
-                    conv = orig.apply(to_halfwidth)
-                    changed = (orig != conv).sum()
-                    if changed > 0:
-                        df_clean[col] = conv
-                        cells += int(changed)
+                for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
+                    col_values = df_clean[col].tolist()
+                    new_values = []
+                    for v in col_values:
+                        if pd.isna(v):
+                            new_values.append(v)
+                            continue
+                        s_orig = str(v)
+                        s_new = to_halfwidth(s_orig)
+                        if s_orig != s_new:
+                            cells += 1
+                        new_values.append(s_new)
+                    df_clean[col] = new_values
             except Exception:
                 pass
             if cells > 0:
                 stats['cells_halfwidth'] = cells
                 actions.append(f"✅ 轉換 {cells} 個全形字元為半形")
 
-        # 3-2. 電話標準化（提前到這裡，確保整欄一致）
+        # 3-2. 電話標準化（逐行）
         if options.get('normalize_phone', True):
             try:
                 for col in df_clean.columns:
                     if col == '疑似重複':
                         continue
                     try:
-                        col_series = df_clean[col].dropna().astype(str)
-                        if len(col_series) == 0:
+                        col_values = df_clean[col].tolist()
+                        non_empty = [v for v in col_values if pd.notna(v) and str(v).strip()]
+                        if len(non_empty) == 0:
                             continue
-                        phone_count = col_series.apply(is_phone_like).sum()
-                        if phone_count / len(col_series) >= 0.5:
-                            df_clean[col] = df_clean[col].apply(
-                                lambda x: normalize_phone(x) if pd.notna(x) else x
-                            )
+                        phone_like_count = sum(1 for v in non_empty if is_phone_like(v))
+                        if phone_like_count / len(non_empty) >= 0.5:
+                            new_values = []
+                            for v in col_values:
+                                if pd.notna(v):
+                                    new_values.append(normalize_phone(v))
+                                else:
+                                    new_values.append(v)
+                            df_clean[col] = new_values
                             stats['phones_fixed'] += 1
                             actions.append(f"✅ 標準化「{col}」電話格式")
                     except Exception:
@@ -308,24 +298,32 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 4. 換行
+        # 4. 換行（逐行）
         if options.get('flatten_newlines', True):
             cells = 0
             try:
-                for col in df_clean.select_dtypes(include=['object']).columns:
-                    orig = df_clean[col].astype(str)
-                    conv = orig.apply(flatten_newlines)
-                    changed = (orig != conv).sum()
-                    if changed > 0:
-                        df_clean[col] = conv
-                        cells += int(changed)
+                for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
+                    col_values = df_clean[col].tolist()
+                    new_values = []
+                    for v in col_values:
+                        if pd.isna(v):
+                            new_values.append(v)
+                            continue
+                        s_orig = str(v)
+                        s_new = flatten_newlines(s_orig)
+                        if s_orig != s_new:
+                            cells += 1
+                        new_values.append(s_new)
+                    df_clean[col] = new_values
             except Exception:
                 pass
             if cells > 0:
                 stats['cells_newline'] = cells
                 actions.append(f"✅ 處理 {cells} 個換行符號")
 
-        # 5. 重複處理（雙模式）
+        # 5. 重複處理（雙模式，逐行）
         dup_mode = stats['duplicate_mode']
         try:
             dup_cols = options.get('duplicate_keys', [])
@@ -350,26 +348,20 @@ class SmartCleaner:
                         actions.append(f"✅ 自動去重合併：移除 {dropped} 列重複資料")
                     else:
                         actions.append("✅ 未發現重複資料")
-
                 else:
-                    # 模式 A：僅標記（最穩健寫法）
-                    # 先移除舊欄位（如果存在）
-                    if '疑似重複' in df_clean.columns:
-                        df_clean = df_clean.drop(columns=['疑似重複'])
-                    df_clean = df_clean.reset_index(drop=True)
-
-                    # 逐行賦值，確保每一行都被處理
-                    df_clean['疑似重複'] = '否'
-                    for idx in df_clean.index:
-                        try:
-                            if dup_mask_all.get(idx, False):
-                                df_clean.at[idx, '疑似重複'] = '是'
-                        except Exception:
-                            pass
+                    # 模式 A：僅標記（逐行處理，最穩健）
+                    dup_flag_values = []
+                    for i in range(len(df_clean)):
+                        if bool(dup_mask_all.iloc[i]):
+                            dup_flag_values.append('是')
+                        else:
+                            dup_flag_values.append('否')
+                    df_clean['疑似重複'] = dup_flag_values
                     stats['duplicates_flagged'] = total_dup
 
                     if total_dup > 0:
                         dup_records = []
+                        dup_indices = df_clean.index[dup_mask_all].tolist()
                         for idx in dup_indices:
                             try:
                                 this_row = df_clean.loc[idx, dup_cols]
@@ -424,25 +416,33 @@ class SmartCleaner:
             except Exception as e:
                 actions.append(f"⚠️ 欄位名稱標準化失敗：{e}")
 
-        # 7. 文字 trim（電話已於 3-2 處理，這裡只 trim）
+        # 7. 文字 trim（逐行）
         if options.get('trim_strings', True):
             touched = 0
             try:
-                for col in df_clean.select_dtypes(include=['object']).columns:
+                for col in df_clean.columns:
                     if col == '疑似重複':
                         touched += 1
                         continue
-                    df_clean[col] = (
-                        df_clean[col].astype(str).str.strip()
-                        .replace({'nan': np.nan, 'None': np.nan, '': np.nan})
-                    )
+                    col_values = df_clean[col].tolist()
+                    new_values = []
+                    for v in col_values:
+                        if pd.isna(v):
+                            new_values.append(np.nan)
+                            continue
+                        s = str(v).strip()
+                        if s == '' or s.lower() == 'nan' or s == 'None':
+                            new_values.append(np.nan)
+                        else:
+                            new_values.append(s)
+                    df_clean[col] = new_values
                     touched += 1
             except Exception:
                 pass
             if touched:
                 stats['columns_cleaned'] = touched
 
-        # 8. 日期清理
+        # 8. 日期清理（逐行）
         if options.get('normalize_date', True):
             fixed = 0
             invalid_date_records = []
@@ -455,32 +455,35 @@ class SmartCleaner:
                     except Exception:
                         ctype = 'text'
 
-                    s_str = df_clean[col].dropna().astype(str).str.strip()
-                    is_date_col = ctype in ('date', 'date_str')
+                    col_values = df_clean[col].tolist()
+                    non_empty = [v for v in col_values if pd.notna(v) and str(v).strip()]
+                    if len(non_empty) == 0:
+                        continue
 
-                    if not is_date_col and len(s_str) > 0:
-                        try:
-                            date_like = s_str.str.match(
-                                r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?)(\s+\d{1,2}:\d{2})?$'
-                            ).sum()
-                            if date_like / len(s_str) >= 0.3:
-                                is_date_col = True
-                        except Exception:
-                            pass
+                    is_date_col = ctype in ('date', 'date_str')
+                    if not is_date_col:
+                        date_like_count = 0
+                        for v in non_empty:
+                            s_v = str(v).strip()
+                            if re.match(
+                                r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?)(\s+\d{1,2}:\d{2}(:\d{2})?)?$',
+                                s_v
+                            ):
+                                date_like_count += 1
+                        if date_like_count / len(non_empty) >= 0.3:
+                            is_date_col = True
 
                     if not is_date_col:
                         continue
 
-                    orig = df_clean[col].tolist()
-                    conv = []
-                    for idx, v in enumerate(orig):
+                    new_values = []
+                    for idx, v in enumerate(col_values):
                         if pd.isna(v) or str(v).strip() == '':
-                            conv.append(v)
+                            new_values.append(v)
                             continue
-
                         s = str(v).strip()
                         if '（无效日期）' in s or '（無效日期）' in s:
-                            conv.append(v)
+                            new_values.append(v)
                             continue
 
                         result = convert_minguo_to_western(v)
@@ -495,13 +498,12 @@ class SmartCleaner:
                                 'marked_value': result_str,
                                 'reason': reason,
                             })
-                            conv.append(result)
+                            new_values.append(result)
                         else:
-                            conv.append(result)
+                            new_values.append(result)
                             if str(v) != result_str:
                                 fixed += 1
-
-                    df_clean[col] = conv
+                    df_clean[col] = new_values
             except Exception:
                 pass
 
@@ -515,68 +517,66 @@ class SmartCleaner:
                     f"⚠️ 發現 {len(invalid_date_records)} 筆無效日期（已保留原始值）"
                 )
 
-        # 8-2. 中文數字轉換
+        # 8-2. 中文數字轉換（逐行）
         if options.get('normalize_chinese_number', True):
             cn_fixed = 0
             try:
                 for col in df_clean.columns:
                     if col == '疑似重複':
                         continue
-                    col_has_cn = False
-                    for v in df_clean[col].dropna().astype(str):
-                        if has_chinese_number(v):
-                            col_has_cn = True
-                            break
-                    if not col_has_cn:
+                    col_values = df_clean[col].tolist()
+                    non_empty = [v for v in col_values if pd.notna(v) and str(v).strip()]
+                    if len(non_empty) == 0:
                         continue
-
-                    orig = df_clean[col].tolist()
-                    conv = []
-                    for v in orig:
+                    has_cn = any(has_chinese_number(v) for v in non_empty)
+                    if not has_cn:
+                        continue
+                    new_values = []
+                    for v in col_values:
                         if pd.isna(v):
-                            conv.append(v)
+                            new_values.append(v)
                             continue
                         s = str(v).strip()
                         if has_chinese_number(s):
                             parsed = parse_chinese_number(s)
                             if parsed is not None:
-                                conv.append(parsed)
+                                new_values.append(parsed)
                                 cn_fixed += 1
                                 continue
-                        conv.append(v)
-                    df_clean[col] = conv
+                        new_values.append(v)
+                    df_clean[col] = new_values
             except Exception:
                 pass
             if cn_fixed > 0:
                 stats['chinese_numbers_fixed'] = cn_fixed
                 actions.append(f"✅ 轉換 {cn_fixed} 個中文數字")
 
-        # 8-3. 單位尾綴移除
+        # 8-3. 單位尾綴移除（逐行）
         if options.get('strip_units', True):
             unit_fixed = 0
             try:
                 for col in df_clean.columns:
                     if col == '疑似重複':
                         continue
-                    orig = df_clean[col].tolist()
-                    conv = []
-                    for v in orig:
+                    col_values = df_clean[col].tolist()
+                    new_values = []
+                    for v in col_values:
                         if pd.isna(v):
-                            conv.append(v)
+                            new_values.append(v)
                             continue
                         s = str(v).strip()
                         new_v = strip_unit_suffix(s)
                         if str(new_v) != s:
                             unit_fixed += 1
-                        conv.append(new_v)
-                    df_clean[col] = conv
+                        new_values.append(new_v)
+                    df_clean[col] = new_values
             except Exception:
                 pass
             if unit_fixed > 0:
                 stats['unit_suffix_fixed'] = unit_fixed
                 actions.append(f"✅ 移除 {unit_fixed} 個單位尾綴")
 
-        # 9. 貨幣
+        # 9. 貨幣（逐行）
         if options.get('clean_currency', True):
             fixed = 0
             try:
@@ -588,18 +588,24 @@ class SmartCleaner:
                     except Exception:
                         continue
                     if ctype == 'currency':
-                        orig = df_clean[col].tolist()
-                        conv = [clean_currency_value(v) for v in orig]
-                        changed = sum(1 for o, n in zip(orig, conv) if str(o) != str(n))
-                        df_clean[col] = conv
-                        fixed += changed
+                        col_values = df_clean[col].tolist()
+                        new_values = []
+                        for v in col_values:
+                            if pd.isna(v):
+                                new_values.append(v)
+                                continue
+                            nv = clean_currency_value(v)
+                            if str(v) != str(nv):
+                                fixed += 1
+                            new_values.append(nv)
+                        df_clean[col] = new_values
             except Exception:
                 pass
             if fixed > 0:
                 stats['currency_fixed'] = fixed
                 actions.append(f"✅ 清理 {fixed} 個貨幣 / 中文數字")
 
-        # 10. Email
+        # 10. Email（逐行）
         if options.get('normalize_email', True):
             try:
                 for col in df_clean.columns:
@@ -610,7 +616,14 @@ class SmartCleaner:
                     except Exception:
                         continue
                     if ctype == 'email':
-                        df_clean[col] = df_clean[col].astype(str).str.lower()
+                        col_values = df_clean[col].tolist()
+                        new_values = []
+                        for v in col_values:
+                            if pd.isna(v):
+                                new_values.append(v)
+                            else:
+                                new_values.append(str(v).lower())
+                        df_clean[col] = new_values
                         stats['emails_fixed'] += 1
                         actions.append(f"✅ 「{col}」Email 轉小寫")
             except Exception:
@@ -673,7 +686,6 @@ class SmartCleaner:
                 continue
             calculated = float(detail_nums.sum())
             summary_value = float(sum(summary_vals))
-            # 差異 = 重算 - 原始
             diff = round(calculated - summary_value, 2)
             if abs(diff) > 0.01:
                 results.append({
@@ -688,7 +700,6 @@ class SmartCleaner:
     def detect_anomalies(cls, df, source_name='', total_check=None):
         anomalies = []
 
-        # 0. 總計不一致
         if total_check:
             for item in total_check:
                 col_name = item.get('column', '')
@@ -713,7 +724,6 @@ class SmartCleaner:
                     '建议': '请确认原始总计是否正确，或检查是否有遗漏的明细资料',
                 })
 
-        # 1. 無效日期
         for col in df.columns:
             if col == '疑似重複':
                 continue
@@ -741,7 +751,6 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 2. 疑似重複
         if '疑似重複' in df.columns:
             try:
                 dup_mask = df['疑似重複'].astype(str).str.strip() == '是'
@@ -778,7 +787,6 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 3. 數值異常
         for col in df.columns:
             if col == '疑似重複':
                 continue
