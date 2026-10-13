@@ -397,6 +397,18 @@ def is_non_data_row(row):
     if len(values) == 0:
         return True
 
+    # ==========================================================
+    # 防禦：如果這行是「彙總列」（總計 / 小計 / 合計），
+    # 絕對不當成非資料行，交給後面的 summary_row_action 處理
+    # ==========================================================
+    try:
+        first_val = str(values[0]).strip()
+        for kw in SUMMARY_KEYWORDS:
+            if kw in first_val:
+                return False
+    except Exception:
+        pass
+
     total_cols = len(row.values)
 
     # 填充率太低（< 0.3）且總字數不多 → 非資料行
@@ -418,7 +430,6 @@ def is_non_data_row(row):
         if kw in row_str:
             return True
     return False
-
 
 def format_bytes(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
