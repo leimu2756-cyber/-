@@ -480,6 +480,7 @@ def build_dataframe(df_raw, skip_n=0, header_n=0, auto_mode=True):
         df_raw = df_raw.iloc[skip_n:].reset_index(drop=True)
 
     if auto_mode:
+        # 移除垃圾行
         garbage_idx = [
             i for i in range(len(df_raw))
             if is_garbage_row(df_raw.iloc[i])
@@ -492,6 +493,40 @@ def build_dataframe(df_raw, skip_n=0, header_n=0, auto_mode=True):
             if is_header_row(df_raw.iloc[i]):
                 header_idx = i
                 break
+
+        if header_idx is not None:
+            # 額外防禦：檢查「表頭候選」和「下一行」的相似度
+            # 如果下一行和表頭候選「型態非常相似」，代表第一行是資料而不是表頭
+            if header_idx + 1 < len(df_raw):
+                cur_row = df_raw.iloc[header_idx]
+                next_row = df_raw.iloc[header_idx + 1]
+
+                # 比較兩行的「型態指紋」（是否為數字/文字/日期）
+                def type_fingerprint(val):
+                    if pd.isna(val):
+                        return 'empty'
+                    s = str(val).strip()
+                    if not s:
+                        return 'empty'
+                    cleaned = s.replace('-', '').replace('/', '').replace('.', '').replace(',', '').replace(' ', '')
+                    if cleaned.isdigit():
+                        return 'number'
+                    # 看是否像日期
+                    if re.match(r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}', s):
+                        return 'date'
+                    return 'text'
+
+                cur_fp = [type_fingerprint(v) for v in cur_row.values]
+                next_fp = [type_fingerprint(v) for v in next_row.values]
+
+                # 如果兩行型態指紋「一模一樣」，表頭候選其實是資料
+                if cur_fp == next_fp and len(cur_fp) > 0:
+                    # 額外檢查：表頭通常會有「欄位名稱」的重複性
+                    # 例如「日期」「金額」這種短詞；資料行通常不會每個 cell 都是短詞
+                    # 這裡用「平均字元長度」判斷
+                    cur_avg_len = sum(len(str(v)) for v in cur_row.values if pd.notna(v)) / max(len(cur_row), 1)
+                    if cur_avg_len > 4:  # 平均長度 > 4 字元，不是典型表頭
+                        header_idx = None
 
         if header_idx is not None:
             df = df_raw.copy()
