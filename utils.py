@@ -409,27 +409,61 @@ def is_summary_row(row):
     return False
 
 
-def is_non_data_row(row):
+def is_header_row(row):
     try:
-        values = [v for v in row.values if pd.notna(v)]
+        vals = list(row.values)
     except Exception:
         return False
-    if len(values) == 0:
-        return True
-    try:
-        row_str = ' '.join(str(v) for v in values)
-    except Exception:
+    non_empty = [
+        v for v in vals
+        if pd.notna(v) and str(v).strip() not in ('', 'nan', 'None')
+    ]
+    if not non_empty or not vals:
         return False
-    cleaned = row_str.replace(',', '').replace(' ', '').replace('\t', '').strip()
-    if cleaned == '':
-        return True
-    if len(cleaned) <= 1 and not cleaned.isalnum():
-        return True
-    for kw in NON_DATA_KEYWORDS:
-        if kw in row_str:
-            return True
-    return False
+    if len(non_empty) / len(vals) < 0.5:
+        return False
 
+    # ==========================================================
+    # 新增：如果任何單元格看起來像「數據」（數字 / 日期 / Email / URL），
+    # 這一行就是資料列，不是表頭
+    # ==========================================================
+    for v in non_empty:
+        s = str(v).strip()
+
+        # 看起來像電話？（開頭 0 的數字，可能含橫線、空白、括號）
+        digits_only = re.sub(r'\D', '', s)
+        if digits_only and len(digits_only) >= 8 and len(digits_only) <= 11:
+            # 且原本字串不太長（避免誤判「2026年3月15日」這種長字串）
+            if len(s) <= 20:
+                return False
+
+        # 看起來像日期？（YYYY/MM/DD 或 YYYY-MM-DD 或民國）
+        if re.match(r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}', s):
+            return False
+
+        # 看起來像純數字（可能含千分位）？
+        cleaned_num = s.replace(',', '').replace('.', '').replace('-', '').replace(' ', '').strip()
+        if cleaned_num.isdigit() and len(s) <= 15:
+            return False
+
+        # 看起來像 Email？
+        if '@' in s and '.' in s:
+            return False
+
+        # 看起來像 URL？
+        if s.lower().startswith(('http://', 'https://')):
+            return False
+
+    # ==========================================================
+    # 剩下的檢查（文字比例）
+    # ==========================================================
+    text_count = 0
+    for v in non_empty:
+        cleaned = (str(v).replace('.', '').replace('-', '')
+                   .replace(',', '').replace('/', '').replace(' ', '').strip())
+        if cleaned and not cleaned.isdigit():
+            text_count += 1
+    return text_count >= len(non_empty) * 0.6
 
 def format_bytes(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
