@@ -14,15 +14,14 @@ from utils import (
 
 
 def explain_invalid_date(value):
-    """解釋為什麼一個日期無效"""
     if value is None or pd.isna(value):
         return "空值"
     s = str(value).strip()
     s = s.replace('（无效日期）', '').replace('（無效日期）', '').strip()
 
-    m = re.match(r'^(\d{2,4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
+    m = re.match(r'^(\d{2,4})[\-/](\d{1,2})[\-/](\d{1,2})', s)
     if not m:
-        m = re.match(r'^(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
+        m = re.match(r'^(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})', s)
     if not m:
         return "無法識別的日期格式"
 
@@ -35,7 +34,6 @@ def explain_invalid_date(value):
 
     if not (1 <= mo <= 12):
         return f"{mo} 月不存在"
-
     if not (1 <= d <= 31):
         return f"每月最多 31 天"
 
@@ -90,13 +88,15 @@ class SmartCleaner:
         if len(s_str) == 0:
             return 'empty'
 
+        # 電話（寬鬆判斷，優先處理）
         try:
             phone_count = s_str.apply(is_phone_like).sum()
-            if phone_count / len(s_str) >= 0.6:
+            if phone_count / len(s_str) >= 0.5:
                 return 'phone'
         except Exception:
             pass
 
+        # 中文數字 → 視為數字
         try:
             cn_count = s_str.apply(has_chinese_number).sum()
             if cn_count / len(s_str) >= 0.3:
@@ -116,6 +116,7 @@ class SmartCleaner:
         except Exception:
             pass
 
+        # 貨幣
         try:
             cn_money = s_str.apply(
                 lambda x: any(ind in x for ind in CN_MONEY_INDICATORS)
@@ -216,7 +217,7 @@ class SmartCleaner:
             'columns_standardized': 0,
             'duplicates_flagged': 0,
             'duplicates_records': [],
-            'duplicates_dropped': 0,     # 新增：自動去重模式下刪除的列數
+            'duplicates_dropped': 0,
             'duplicate_mode': options.get('duplicate_mode', 'mark'),
         }
 
@@ -265,6 +266,28 @@ class SmartCleaner:
                 stats['cells_halfwidth'] = cells
                 actions.append(f"✅ 轉換 {cells} 個全形字元為半形")
 
+        # 3-2. 電話標準化（提前到這裡，確保整欄一致）
+        if options.get('normalize_phone', True):
+            try:
+                for col in df_clean.columns:
+                    if col == '疑似重複':
+                        continue
+                    try:
+                        col_series = df_clean[col].dropna().astype(str)
+                        if len(col_series) == 0:
+                            continue
+                        phone_count = col_series.apply(is_phone_like).sum()
+                        if phone_count / len(col_series) >= 0.5:
+                            df_clean[col] = df_clean[col].apply(
+                                lambda x: normalize_phone(x) if pd.notna(x) else x
+                            )
+                            stats['phones_fixed'] += 1
+                            actions.append(f"✅ 標準化「{col}」電話格式")
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
         # 4. 換行
         if options.get('flatten_newlines', True):
             cells = 0
@@ -282,9 +305,7 @@ class SmartCleaner:
                 stats['cells_newline'] = cells
                 actions.append(f"✅ 處理 {cells} 個換行符號")
 
-        # ==========================================================
-        # 5. 重複處理（雙模式：mark / drop）
-        # ==========================================================
+        # 5. 重複處理（雙模式）
         dup_mode = stats['duplicate_mode']
         try:
             dup_cols = options.get('duplicate_keys', [])
@@ -299,7 +320,6 @@ class SmartCleaner:
                 total_dup = int(dup_mask_all.sum())
 
                 if dup_mode == 'drop':
-                    # 模式 B：自動去重合併（只保留第一筆）
                     if total_dup > 0:
                         before = len(df_clean)
                         df_clean = df_clean.drop_duplicates(
@@ -307,20 +327,19 @@ class SmartCleaner:
                         ).reset_index(drop=True)
                         dropped = before - len(df_clean)
                         stats['duplicates_dropped'] = dropped
-                        actions.append(
-                            f"✅ 自動去重合併：移除 {dropped} 列重複資料"
-                        )
+                        actions.append(f"✅ 自動去重合併：移除 {dropped} 列重複資料")
                     else:
                         actions.append("✅ 未發現重複資料")
                 else:
-                    # 模式 A：僅標記（預設）
-                    df_clean['疑似重複'] = dup_mask_all.apply(
-                        lambda x: '是' if x else '否'
-                    )
+                    # 模式 A：僅標記（用穩健的寫法）
+                    df_clean['疑似重複'] = '否'
+                    dup_indices = df_clean[dup_mask_all].index.tolist()
+                    if dup_indices:
+                        df_clean.loc[dup_indices, '疑似重複'] = '是'
+
                     stats['duplicates_flagged'] = total_dup
 
                     if total_dup > 0:
-                        dup_indices = df_clean[dup_mask_all].index.tolist()
                         dup_records = []
                         for idx in dup_indices:
                             try:
@@ -376,7 +395,7 @@ class SmartCleaner:
             except Exception as e:
                 actions.append(f"⚠️ 欄位名稱標準化失敗：{e}")
 
-        # 7. 文字 trim
+        # 7. 文字 trim（電話已於 3-2 處理，這裡只 trim）
         if options.get('trim_strings', True):
             touched = 0
             try:
@@ -384,27 +403,10 @@ class SmartCleaner:
                     if col == '疑似重複':
                         touched += 1
                         continue
-                    is_phone_col = False
-                    try:
-                        sample = df_clean[col].dropna().astype(str).head(20)
-                        if len(sample) > 0:
-                            phone_count = sample.apply(is_phone_like).sum()
-                            if phone_count / len(sample) >= 0.5:
-                                is_phone_col = True
-                    except Exception:
-                        pass
-
-                    if is_phone_col:
-                        df_clean[col] = df_clean[col].apply(
-                            lambda x: normalize_phone(x) if pd.notna(x) else x
-                        )
-                        stats['phones_fixed'] += 1
-                        actions.append(f"✅ 標準化「{col}」電話格式")
-                    else:
-                        df_clean[col] = (
-                            df_clean[col].astype(str).str.strip()
-                            .replace({'nan': np.nan, 'None': np.nan, '': np.nan})
-                        )
+                    df_clean[col] = (
+                        df_clean[col].astype(str).str.strip()
+                        .replace({'nan': np.nan, 'None': np.nan, '': np.nan})
+                    )
                     touched += 1
             except Exception:
                 pass
@@ -430,7 +432,7 @@ class SmartCleaner:
                     if not is_date_col and len(s_str) > 0:
                         try:
                             date_like = s_str.str.match(
-                                r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?)$'
+                                r'^(\d{2,4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?)(\s+\d{1,2}:\d{2})?$'
                             ).sum()
                             if date_like / len(s_str) >= 0.3:
                                 is_date_col = True
@@ -642,7 +644,8 @@ class SmartCleaner:
                 continue
             calculated = float(detail_nums.sum())
             summary_value = float(sum(summary_vals))
-            diff = round(summary_value - calculated, 2)
+            # 差異 = 重算 - 原始
+            diff = round(calculated - summary_value, 2)
             if abs(diff) > 0.01:
                 results.append({
                     'column': col,
@@ -652,27 +655,35 @@ class SmartCleaner:
                 })
         return results
 
-
     @classmethod
     def detect_anomalies(cls, df, source_name='', total_check=None):
         anomalies = []
 
-        # 0. 總計不一致（新增）
+        # 0. 總計不一致
         if total_check:
             for item in total_check:
                 col_name = item.get('column', '')
                 original = item.get('summary_value', 0)
                 recalc = item.get('calculated_value', 0)
-                diff = item.get('difference', 0)
+                diff = round(recalc - original, 2)
                 pct = abs(diff) / max(recalc, 1) * 100
                 severity = '严重' if pct > 5 else '轻微'
+                if diff > 0:
+                    diff_str = f'+{diff:,}'
+                else:
+                    diff_str = f'{diff:,}'
                 anomalies.append({
                     '来源档案': source_name,
                     '列号': '-',
                     '问题类型': '总计不一致',
-                    '说明': f'{col_name}：原始总计 {original:,}，重算总计 {recalc:,}，差额 {diff:+,}（{pct:.2f}%，{severity}）',
+                    '说明': (
+                        f'{col_name}：原始总计 {original:,}，'
+                        f'重算总计 {recalc:,}，'
+                        f'差额 {diff_str}（{pct:.2f}%，{severity}）'
+                    ),
                     '建议': '请确认原始总计是否正确，或检查是否有遗漏的明细资料',
                 })
+
         # 1. 無效日期
         for col in df.columns:
             if col == '疑似重複':
@@ -701,7 +712,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 2. 疑似重複（僅在「標記模式」下顯示）
+        # 2. 疑似重複
         if '疑似重複' in df.columns:
             try:
                 dup_mask = df['疑似重複'].astype(str).str.strip() == '是'
@@ -738,7 +749,7 @@ class SmartCleaner:
             except Exception:
                 pass
 
-        # 3. 數值離群值 / 負數 / 非數值
+        # 3. 數值異常
         for col in df.columns:
             if col == '疑似重複':
                 continue
