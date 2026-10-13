@@ -82,6 +82,19 @@ class SmartCleaner:
     @classmethod
     def detect_column_type(cls, series):
         s = series.dropna()
+                # 優先判斷：如果欄位名稱包含「日期 / 時間 / date / time」，
+        # 且大部分值符合日期格式，直接判定為 date
+        try:
+            col_name = str(series.name).lower()
+            if any(kw in col_name for kw in ['日期', '時間', 'date', 'time']):
+                s_str_check = s.astype(str).str.strip()
+                date_like = s_str_check.str.match(
+                    r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}'
+                ).sum()
+                if len(s_str_check) > 0 and date_like / len(s_str_check) >= 0.5:
+                    return 'date'
+        except Exception:
+            pass
         if len(s) == 0:
             return 'empty'
         s_str = s.astype(str).str.strip()
