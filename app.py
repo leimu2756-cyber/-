@@ -143,7 +143,9 @@ def _format_cell_for_text(v):
 
 
 def df_to_csv_bytes(df):
+    """自訂 CSV 匯出：逐格處理，避免 85.0 與第一行異常"""
     lines = []
+    # 表頭
     header_cells = []
     for c in df.columns:
         s = str(c)
@@ -151,16 +153,36 @@ def df_to_csv_bytes(df):
             s = '"' + s.replace('"', '""') + '"'
         header_cells.append(s)
     lines.append(','.join(header_cells))
-    for _, row in df.iterrows():
-        cells = []
-        for v in row.values:
-            s = _format_cell_for_text(v)
-            if ',' in s or '"' in s or '\n' in s:
-                s = '"' + s.replace('"', '""') + '"'
-            cells.append(s)
-        lines.append(','.join(cells))
-    return ('\n'.join(lines)).encode('utf-8-sig')
 
+    # 內容：用 .values 完全避開 index 對齊問題
+    try:
+        data_matrix = df.values  # numpy 2D array
+    except Exception:
+        data_matrix = None
+
+    if data_matrix is not None:
+        for i in range(data_matrix.shape[0]):
+            cells = []
+            for j in range(data_matrix.shape[1]):
+                v = data_matrix[i, j]
+                s = _format_cell_for_text(v)
+                if ',' in s or '"' in s or '\n' in s:
+                    s = '"' + s.replace('"', '""') + '"'
+                cells.append(s)
+            lines.append(','.join(cells))
+    else:
+        # 備用：逐行處理
+        for idx in range(len(df)):
+            cells = []
+            for col in df.columns:
+                v = df.iloc[idx][col]
+                s = _format_cell_for_text(v)
+                if ',' in s or '"' in s or '\n' in s:
+                    s = '"' + s.replace('"', '""') + '"'
+                cells.append(s)
+            lines.append(','.join(cells))
+
+    return ('\n'.join(lines)).encode('utf-8-sig')
 
 def df_to_excel_multi(sheets_dict):
     buffer = io.BytesIO()
