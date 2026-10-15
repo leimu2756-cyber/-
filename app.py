@@ -1065,12 +1065,21 @@ elif st.session_state['user_role'] == 'client':
                             col_j1, col_j2, col_j3 = st.columns(3)
                             with col_j1:
                                 suggested_key = suggest_join_key(files_data, strategy_info['common_cols'])
+                                # 動態 key，避免記憶上次選擇
+                                file_hash = hash(tuple(f['name'] for f in files_data))
+                                default_idx = (
+                                    strategy_info['common_cols'].index(suggested_key)
+                                    if suggested_key in strategy_info['common_cols']
+                                    else 0
+                                )
                                 join_key = st.selectbox(
                                     "共同欄位",
                                     strategy_info['common_cols'],
-                                    index=strategy_info['common_cols'].index(suggested_key) if suggested_key in strategy_info['common_cols'] else 0,
-                                    key="merge_join_key",
+                                    index=default_idx,
+                                    key=f"merge_join_key_{file_hash}",
                                 )
+                                if suggested_key:
+                                    st.caption(f"💡 系統建議：**{suggested_key}**")
                             with col_j2:
                                 join_type_map = {
                                     "LEFT JOIN": "left",
