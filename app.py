@@ -111,7 +111,7 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 工具函式：匯出格式處理（含前導 0 保留）
+# 工具函式
 # ============================================================
 def _is_phone_col(col_name, series):
     """判斷這欄是否為電話欄位"""
@@ -241,7 +241,6 @@ def df_to_excel_multi(sheets_dict):
             sheet_name = str(name)[:31]
             df_out.to_excel(writer, index=False, sheet_name=sheet_name)
 
-            # 把電話 / ID 欄位設為文字格式
             try:
                 ws = writer.sheets[sheet_name]
                 for col_idx, col_name in enumerate(df_out.columns, 1):
@@ -272,6 +271,84 @@ def df_to_json_bytes(df):
                 rec[h] = v
         records.append(rec)
     return json.dumps(records, ensure_ascii=False, indent=2).encode('utf-8')
+
+
+# ============================================================
+# 清理前後對比（高亮修改處）
+# ============================================================
+def render_diff_view(df_before, df_after, max_rows=10):
+    """
+    清理前後對比（逐格高亮修改處）
+    綠色 = 修改後的值，灰色刪除線 = 原始值
+    """
+    st.markdown("#### 🔍 逐格對比")
+
+    try:
+        before = df_before.head(max_rows).reset_index(drop=True)
+        after = df_after.head(max_rows).reset_index(drop=True)
+    except Exception as e:
+        st.warning(f"對比失敗：{e}")
+        return
+
+    cols = list(after.columns)
+    cols_compare = [c for c in cols if c != '疑似重複']
+
+    html_parts = [
+        '<div style="overflow-x:auto;font-size:12px;">',
+        '<table style="width:100%;border-collapse:collapse;">',
+    ]
+
+    # 表頭
+    html_parts.append('<tr>')
+    for c in cols_compare:
+        html_parts.append(
+            f'<th style="padding:6px;border:1px solid #ddd;'
+            f'background:#f5f5f5;text-align:left;font-weight:600;">{c}</th>'
+        )
+    html_parts.append('</tr>')
+
+    # 逐行
+    n = min(len(before), len(after))
+    total_changes = 0
+    for i in range(n):
+        html_parts.append('<tr>')
+        for c in cols_compare:
+            try:
+                b_val = str(before.iloc[i][c]) if c in before.columns else ''
+                a_val = str(after.iloc[i][c]) if c in after.columns else ''
+            except Exception:
+                b_val, a_val = '', ''
+
+            b_empty = b_val.strip() in ('', 'nan', 'None', 'NaN')
+            a_empty = a_val.strip() in ('', 'nan', 'None', 'NaN')
+
+            if b_val != a_val and not b_empty:
+                total_changes += 1
+                html_parts.append(
+                    f'<td style="padding:6px;border:1px solid #ddd;background:#e8f5e9;">'
+                    f'<span style="color:#999;text-decoration:line-through;font-size:11px;">{b_val}</span> '
+                    f'<span style="color:#2e7d32;font-weight:bold;">→ {a_val}</span>'
+                    f'</td>'
+                )
+            elif a_empty and not b_empty:
+                total_changes += 1
+                html_parts.append(
+                    f'<td style="padding:6px;border:1px solid #ddd;background:#fff3e0;">'
+                    f'<span style="color:#999;text-decoration:line-through;">{b_val}</span>'
+                    f'</td>'
+                )
+            else:
+                html_parts.append(
+                    f'<td style="padding:6px;border:1px solid #ddd;">{a_val}</td>'
+                )
+        html_parts.append('</tr>')
+
+    html_parts.append('</table>')
+    html_parts.append('</div>')
+
+    st.markdown(''.join(html_parts), unsafe_allow_html=True)
+
+    st.caption(f"📊 前 {n} 行共 {total_changes} 處修改（綠色 = 修改後、灰色刪除線 = 修改前）")
 
 
 # ============================================================
@@ -882,11 +959,11 @@ elif st.session_state['user_role'] == 'client':
                             if len(dup_df) > 0:
                                 st.dataframe(dup_df, use_container_width=True, hide_index=True)
 
+                    # ================================================
+                    # 清理前後對比（高亮修改處）
+                    # ================================================
                     with st.expander("🔍 清理前後對比（前 10 筆）", expanded=False):
-                        st.markdown("**清理前**")
-                        st.dataframe(df.head(10), use_container_width=True)
-                        st.markdown("**清理後明細**")
-                        st.dataframe(df_clean.head(10), use_container_width=True)
+                        render_diff_view(df, df_clean, max_rows=10)
                         if summary_rows is not None and len(summary_rows) > 0:
                             st.markdown("**下載檔案底部彙總**")
                             st.dataframe(summary_rows, use_container_width=True)
