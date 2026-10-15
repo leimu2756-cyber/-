@@ -1,6 +1,7 @@
 import os
 import io
 import time
+import json
 import bcrypt
 import pandas as pd
 import streamlit as st
@@ -22,6 +23,9 @@ from utils import build_dataframe
 from db import init_db, fetch_one, fetch_all, execute
 
 
+# ============================================================
+# 0. 設定
+# ============================================================
 ADMIN_EMAIL = '717804lin@gmail.com'
 
 ANNOUNCEMENT = {
@@ -107,35 +111,70 @@ if st.session_state['logged_in']:
 
 
 # ============================================================
-# 核心工具：把 df 強制轉成「純 Python 二維 list」
-# 完全避開 pandas 的 Series 和 index 對齊問題
+# 工具函式：匯出格式處理（含前導 0 保留）
 # ============================================================
+def _is_phone_col(col_name, series):
+    """判斷這欄是否為電話欄位"""
+    try:
+        import re as _re
+        name = str(col_name).lower()
+        if any(kw in name for kw in ['電話', '手机', '手機', 'phone', 'tel', '手機號碼']):
+            return True
+        non_empty = series.dropna().astype(str).head(20)
+        if len(non_empty) == 0:
+            return False
+        count = 0
+        for v in non_empty:
+            digits = _re.sub(r'\D', '', v)
+            if 8 <= len(digits) <= 11:
+                count += 1
+        return count / len(non_empty) >= 0.6
+    except Exception:
+        return False
+
+
+def _is_id_col(col_name, series):
+    """判斷是否為 ID 欄位（訂單編號、產品編號等）"""
+    try:
+        name = str(col_name).lower()
+        if any(kw in name for kw in ['編號', '编号', 'id', '序號', '代號']):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _prepare_export_df(df):
+    """匯出前處理：電話 / ID 欄位轉字串，保留前導 0"""
+    df_out = df.copy()
+    for col in df_out.columns:
+        try:
+            if _is_phone_col(col, df_out[col]) or _is_id_col(col, df_out[col]):
+                df_out[col] = df_out[col].apply(
+                    lambda x: '' if pd.isna(x) else str(x)
+                )
+        except Exception:
+            pass
+    return df_out
+
+
 def df_to_matrix(df):
-    """
-    把 DataFrame 轉成 (headers, rows) 兩個 list
-    headers: list of str
-    rows: list of list（每個 cell 是原始 Python 值）
-    完全用位置存取，不用任何 Series
-    """
+    """DataFrame → (headers, rows)，用位置存取避免 index 問題"""
     if df is None:
         return [], []
-
     headers = [str(c) for c in df.columns]
-
     rows = []
     n_rows = len(df)
     n_cols = len(df.columns)
-
     for i in range(n_rows):
         row = []
         for j in range(n_cols):
             try:
-                v = df.iat[i, j]  # 用位置存取，不用欄位名
+                v = df.iat[i, j]
             except Exception:
                 v = ''
             row.append(v)
         rows.append(row)
-
     return headers, rows
 
 
@@ -160,15 +199,15 @@ def format_cell(v):
 
 
 def csv_escape(s):
-    """CSV 轉義"""
-    if ',' in s or '"' in s or '\n' in s or '\r' in s:
+    if ',' in s or '"' in s or '\n' in s or '\r' in s or ';' in s:
         return '"' + s.replace('"', '""') + '"'
     return s
 
 
 def df_to_csv_bytes(df):
-    """CSV 匯出：完全用位置存取"""
-    headers, rows = df_to_matrix(df)
+    """CSV 匯出：電話 / ID 欄位保留前導 0"""
+    df_prepared = _prepare_export_df(df)
+    headers, rows = df_to_matrix(df_prepared)
     lines = []
     lines.append(','.join(csv_escape(h) for h in headers))
     for row in rows:
@@ -178,15 +217,16 @@ def df_to_csv_bytes(df):
 
 
 def df_to_excel_multi(sheets_dict):
-    """Excel 匯出：多工作表"""
+    """Excel 匯出：電話 / ID 欄位強制為文字格式"""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         for name, df in sheets_dict.items():
             if df is None or len(df) == 0:
                 continue
-            headers, rows = df_to_matrix(df)
 
-            # 逐格轉型（整數 float → int）
+            df_prepared = _prepare_export_df(df)
+            headers, rows = df_to_matrix(df_prepared)
+
             new_rows = []
             for row in rows:
                 new_row = []
@@ -198,13 +238,28 @@ def df_to_excel_multi(sheets_dict):
                 new_rows.append(new_row)
 
             df_out = pd.DataFrame(new_rows, columns=headers)
-            df_out.to_excel(writer, index=False, sheet_name=str(name)[:31])
+            sheet_name = str(name)[:31]
+            df_out.to_excel(writer, index=False, sheet_name=sheet_name)
+
+            # 把電話 / ID 欄位設為文字格式
+            try:
+                ws = writer.sheets[sheet_name]
+                for col_idx, col_name in enumerate(df_out.columns, 1):
+                    is_phone = _is_phone_col(col_name, df_prepared[col_name])
+                    is_id = _is_id_col(col_name, df_prepared[col_name])
+                    if is_phone or is_id:
+                        for row_idx in range(2, len(df_out) + 2):
+                            cell = ws.cell(row=row_idx, column=col_idx)
+                            cell.number_format = '@'
+            except Exception:
+                pass
+
     return buffer.getvalue()
 
 
 def df_to_json_bytes(df):
-    """JSON 匯出：完全用位置存取"""
-    headers, rows = df_to_matrix(df)
+    df_prepared = _prepare_export_df(df)
+    headers, rows = df_to_matrix(df_prepared)
     records = []
     for row in rows:
         rec = {}
@@ -216,7 +271,6 @@ def df_to_json_bytes(df):
             else:
                 rec[h] = v
         records.append(rec)
-    import json
     return json.dumps(records, ensure_ascii=False, indent=2).encode('utf-8')
 
 
