@@ -244,7 +244,7 @@ def _stack_dataframes(cleaned_list, keep_source):
 
 
 def _join_dataframes(cleaned_list, options):
-    """水平 JOIN"""
+    """水平 JOIN（自動處理重複欄位）"""
     join_type = options.get('join_type', 'left')
     join_key = options.get('join_key')
     base_file = options.get('base_file')
@@ -271,6 +271,41 @@ def _join_dataframes(cleaned_list, options):
             raise ValueError(f'基礎表沒有欄位「{join_key}」')
         if join_key not in df_next.columns:
             raise ValueError(f'{item["name"]} 沒有欄位「{join_key}」')
+
+        # ==========================================================
+        # 找出「兩邊都有」的欄位
+        # 如果這些欄位在 JOIN 後的值完全相同 → 不保留第二個
+        # 如果不同 → 加後綴保留
+        # ==========================================================
+        common_cols = [
+            c for c in result.columns
+            if c in df_next.columns and c not in (join_key, '_來源')
+        ]
+
+        # 檢查每個共同欄位是否「值相同」
+        cols_to_drop = []  # 要從 df_next 移除的欄位（因為值相同）
+        for c in common_cols:
+            try:
+                # 用 join_key 對應，檢查值是否一致
+                merged_test = pd.merge(
+                    result[[join_key, c]].drop_duplicates(),
+                    df_next[[join_key, c]].drop_duplicates(),
+                    on=join_key,
+                    how='inner',
+                    suffixes=('_a', '_b'),
+                )
+                if len(merged_test) > 0:
+                    # 檢查兩個值是否都相同
+                    same = (merged_test[f'{c}_a'].astype(str) ==
+                            merged_test[f'{c}_b'].astype(str)).all()
+                    if same:
+                        cols_to_drop.append(c)
+            except Exception:
+                pass
+
+        # 移除重複欄位
+        if cols_to_drop:
+            df_next = df_next.drop(columns=cols_to_drop, errors='ignore')
 
         suffix_b = f'_{item["name"].replace(".csv", "").replace(".xlsx", "")}'
 
