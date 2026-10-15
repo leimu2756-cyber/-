@@ -3,4 +3,6 @@ pandas
 openpyxl
 bcrypt
 sqlalchemy
-psycopg[binary]>=3.2
+psycopg[binary]
+plotly
+chardet
