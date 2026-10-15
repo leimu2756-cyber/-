@@ -1147,15 +1147,19 @@ elif st.session_state['user_role'] == 'client':
 
                             col_a, col_b = st.columns(2)
 
+                            # CSV 匯出（獨立處理）
+                            csv_bytes = None
                             try:
                                 csv_bytes = df_to_csv_bytes(merged)
-                                with col_a:
+                            except Exception as e:
+                                st.warning(f"CSV 匯出失敗：{e}")
+
+                            with col_a:
+                                if csv_bytes is not None:
                                     st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
                                                       "text/csv", use_container_width=True, type="primary",
                                                       key="merge_dl_csv")
-                            except Exception as e:
-                                st.error(f"CSV 匯出失敗：{e}")
-
+                            excel_bytes = None
                             try:
                                 total_rows = []
                                 for info in result['files_info']:
@@ -1184,13 +1188,15 @@ elif st.session_state['user_role'] == 'client':
                                     sheets['原始總計比對'] = pd.DataFrame(total_rows)
 
                                 excel_bytes = df_to_excel_multi(sheets)
-                                with col_b:
+                            except Exception as e:
+                                st.warning(f"Excel 匯出失敗：{e}")
+
+                            with col_b:
+                                if excel_bytes is not None:
                                     st.download_button("📊 下載 Excel", excel_bytes, "merged.xlsx",
                                                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                                       use_container_width=True,
                                                       key="merge_dl_xlsx")
-                            except Exception as e:
-                                st.error(f"Excel 匯出失敗：{e}")
 
                             c1, c2, c3, c4 = st.columns(4)
                             c1.metric("來源檔案", stats['files'])
