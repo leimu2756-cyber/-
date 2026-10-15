@@ -716,17 +716,9 @@ elif st.session_state['user_role'] == 'client':
 
                 st.caption(f"📊 讀取結果：{len(df_raw)} 列 × {len(df_raw.columns)} 欄")
 
-                with st.expander("⚙️ 讀取設定", expanded=False):
-                    manual_mode = st.checkbox("手動指定標題位置", value=False, key="single_manual")
-                    if manual_mode:
-                        skip_n = st.number_input("跳過前幾行", min_value=0, max_value=100, value=2, key="single_skip")
-                        header_n = st.number_input("第幾行是標題（0=第一行，-1=無標題）",
-                                                   min_value=-1, max_value=100, value=0, key="single_header")
-                    else:
-                        skip_n, header_n = 0, 0
-
+                # 自動判斷標題
                 try:
-                    df = build_dataframe(df_raw, skip_n, header_n, auto_mode=(not manual_mode))
+                    df = build_dataframe(df_raw, 0, 0, auto_mode=True)
                 except Exception as e:
                     show_friendly_error(e, context="標題判斷")
                     st.stop()
@@ -735,6 +727,28 @@ elif st.session_state['user_role'] == 'client':
                     st.error("⚠️ 解析後沒有資料，請確認檔案內容。")
                     show_contact_box(compact=True)
                     st.stop()
+
+                # 只在「自動判斷失敗」時才顯示手動設定
+                auto_header_cols = all(
+                    str(c).startswith('欄位') for c in df.columns
+                ) if len(df.columns) > 0 else True
+
+                if auto_header_cols:
+                    st.warning("⚠️ 系統無法自動判斷表頭，請手動指定標題位置。")
+                    col_s1, col_s2, col_s3 = st.columns([1, 1, 1])
+                    with col_s1:
+                        skip_n = st.number_input("跳過前幾行", min_value=0, max_value=100, value=0, key="single_skip")
+                    with col_s2:
+                        header_n = st.number_input("第幾行是標題", min_value=-1, max_value=100, value=0, key="single_header")
+                    with col_s3:
+                        st.write("")
+                        st.write("")
+                        if st.button("🔄 重新解析", key="single_reparse"):
+                            try:
+                                df = build_dataframe(df_raw, skip_n, header_n, auto_mode=False)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"重新解析失敗：{e}")
 
                 st.caption(f"📊 清理前：{len(df)} 列 × {len(df.columns)} 欄")
 
@@ -754,38 +768,37 @@ elif st.session_state['user_role'] == 'client':
                 except Exception:
                     pass
 
-                with st.expander("⚙️ 清理選項", expanded=True):
-                    template_choice = st.selectbox("選擇模板", list(TEMPLATES.keys()), index=0, key="single_tpl")
-                    summary_action = st.radio(
-                        "彙總列處理方式",
-                        ["保留在資料中", "完全移除", "分離到另一張表"],
-                        index=2,
-                        key="single_summary",
-                    )
+                # 重複資料處理方式（主要選項，不折疊）
+                dup_mode_label = st.radio(
+                    "🔁 重複資料處理方式",
+                    ["僅標記重複（不刪除）", "自動去重合併"],
+                    index=0,
+                    key="single_dup_mode",
+                    horizontal=True,
+                )
+                dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
+
+                # 進階設定（折疊，通常不用動）
+                with st.expander("⚙️ 進階設定", expanded=False):
                     summary_action_map = {
                         "保留在資料中": "keep",
                         "完全移除": "remove",
                         "分離到另一張表": "separate",
                     }
-
-                    st.markdown("**🔁 重複資料處理方式**")
-                    dup_mode_label = st.radio(
-                        "選擇重複資料的處理方式",
-                        [
-                            "僅標記重複（不刪除）｜適合訂單、記帳本",
-                            "自動去重合併｜適合客戶名單、通訊錄",
-                        ],
-                        index=0,
-                        key="single_dup_mode",
-                        label_visibility="collapsed",
+                    summary_action = st.radio(
+                        "彙總列處理方式",
+                        list(summary_action_map.keys()),
+                        index=2,
+                        key="single_summary",
                     )
-                    dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
-
-                    st.markdown("---")
-                    opt_date = st.checkbox("標準化日期格式", value=True, key="single_date")
-                    opt_currency = st.checkbox("清理貨幣 / 中文數字", value=True, key="single_curr")
-                    opt_phone = st.checkbox("標準化電話格式", value=True, key="single_phone")
-                    opt_email = st.checkbox("Email 轉小寫", value=True, key="single_email")
+                    st.markdown("**清理項目（預設全開）**")
+                    col_1, col_2 = st.columns(2)
+                    with col_1:
+                        opt_date = st.checkbox("標準化日期格式", value=True, key="single_date")
+                        opt_currency = st.checkbox("清理貨幣 / 中文數字", value=True, key="single_curr")
+                    with col_2:
+                        opt_phone = st.checkbox("標準化電話格式", value=True, key="single_phone")
+                        opt_email = st.checkbox("Email 轉小寫", value=True, key="single_email")
 
                 if st.button("🚀 開始清理", type="primary", key="single_clean_btn"):
                     progress = st.progress(0)
