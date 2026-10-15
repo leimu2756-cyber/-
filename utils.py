@@ -29,7 +29,6 @@ EXCEL_ERRORS = [
     '#NAME?', '#NULL!', '#NUM!', 'N/A', 'NULL',
 ]
 
-# ⚠️ 已移除「公司名稱」，避免誤殺正常表頭
 NON_DATA_KEYWORDS = [
     '###', '===', '---', '系統警告', '報表結束', '資料嚴重損毀',
     '備註：', '備註:',
@@ -228,14 +227,26 @@ def validate_date(y, mo, d):
 
 
 def convert_minguo_to_western(value):
+    """
+    民國年 / 各種日期格式 → YYYY-MM-DD（或 YYYY-MM-DD HH:MM）
+    支援：
+      2026/1/7、2026-01-07、2026.1.7、115/1/7、115-01-07、1/7
+      民國115年1月7日、115年1月7日、2026年1月7日
+      2026/02/25 18:28、2026-02-25 18:28、115/02/25 18:28
+      2026/02/25 18:28:35
+      2026.2.25 18:28
+    """
     if pd.isna(value):
         return value
     s = str(value).strip()
     if s == '' or s.lower() == 'nan':
         return np.nan
 
+    # ============ 日期 + 時間 ============
+
+    # 2026/02/25 18:28 或 2026-02-25 18:28 或 2026.02.25 18:28
     m = re.match(
-        r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$',
+        r'^(\d{4})[\-/\.](\d{1,2})[\-/\.](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$',
         s
     )
     if m:
@@ -250,8 +261,9 @@ def convert_minguo_to_western(value):
             time_str += f":{int(sec):02d}"
         return f"{result} {time_str}"
 
+    # 115/02/25 18:28 或 115-02-25 18:28 或 115.02.25 18:28
     m = re.match(
-        r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$',
+        r'^(\d{2,3})[\-/\.](\d{1,2})[\-/\.](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$',
         s
     )
     if m:
@@ -269,6 +281,7 @@ def convert_minguo_to_western(value):
                 time_str += f":{int(sec):02d}"
             return f"{result} {time_str}"
 
+    # 民國115年2月25日 18:28
     m = re.match(
         r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s+(\d{1,2}):(\d{2})',
         s
@@ -282,33 +295,41 @@ def convert_minguo_to_western(value):
             return result
         return f"{result} {h:02d}:{mi:02d}"
 
-    m = re.match(r'^(\d{1,2})[\-/](\d{1,2})$', s)
+    # ============ 純日期 ============
+
+    # 只有月/日（1/7 或 1.7）
+    m = re.match(r'^(\d{1,2})[\-/\.](\d{1,2})$', s)
     if m:
         mo, d = int(m.group(1)), int(m.group(2))
         if 1 <= mo <= 12 and 1 <= d <= 31:
             return validate_date(datetime.now().year, mo, d)
 
+    # 民國115年5月25日
     m = re.match(r'^民國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         return validate_date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3)))
 
+    # 2026年1月7日
     m = re.match(r'^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         return validate_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
+    # 115年1月7日
     m = re.match(r'^(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$', s)
     if m:
         y = int(m.group(1))
         if 1 <= y <= 200:
             return validate_date(y + 1911, int(m.group(2)), int(m.group(3)))
 
-    m = re.match(r'^(\d{2,3})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
+    # 115/1/7 或 115-1-7 或 115.1.7
+    m = re.match(r'^(\d{2,3})[\-/\.](\d{1,2})[\-/\.](\d{1,2})$', s)
     if m:
         y = int(m.group(1))
         if 1 <= y <= 200:
             return validate_date(y + 1911, int(m.group(2)), int(m.group(3)))
 
-    m = re.match(r'^(\d{4})[\-/](\d{1,2})[\-/](\d{1,2})$', s)
+    # 四位西元年（斜線、破折號、點）
+    m = re.match(r'^(\d{4})[\-/\.](\d{1,2})[\-/\.](\d{1,2})$', s)
     if m:
         return validate_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
@@ -397,10 +418,7 @@ def is_non_data_row(row):
     if len(values) == 0:
         return True
 
-    # ==========================================================
-    # 防禦：如果這行是「彙總列」（總計 / 小計 / 合計），
-    # 絕對不當成非資料行，交給後面的 summary_row_action 處理
-    # ==========================================================
+    # 防禦：總計列不當非資料行
     try:
         first_val = str(values[0]).strip()
         for kw in SUMMARY_KEYWORDS:
@@ -411,7 +429,6 @@ def is_non_data_row(row):
 
     total_cols = len(row.values)
 
-    # 填充率太低（< 0.3）且總字數不多 → 非資料行
     if total_cols >= 3 and len(values) / total_cols < 0.3:
         total_chars = sum(len(str(v)) for v in values)
         if total_chars <= 50:
@@ -431,6 +448,7 @@ def is_non_data_row(row):
             return True
     return False
 
+
 def format_bytes(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size < 1024:
@@ -440,10 +458,6 @@ def format_bytes(size):
 
 
 def is_garbage_row(row):
-    """
-    判斷是否為垃圾行（表頭裝飾、警告行）
-    只看前兩個非空值，避免誤殺正常表頭
-    """
     try:
         vals = list(row.values)
     except Exception:
@@ -453,7 +467,6 @@ def is_garbage_row(row):
     non_empty = [v for v in vals if pd.notna(v) and str(v).strip()]
     if not non_empty:
         return False
-    # 只檢查前兩個非空值
     check_str = ' '.join(str(v) for v in non_empty[:2])
     for kw in ['###', '===', '---', '系統警告', '報表結束',
                '資料嚴重損毀']:
@@ -463,11 +476,6 @@ def is_garbage_row(row):
 
 
 def is_header_row(row):
-    """
-    判斷是否為表頭列。
-    關鍵防禦：如果任何單元格看起來像「數據」（電話 / 日期 / 純數字 / Email / URL），
-    就判斷為資料列，不是表頭。
-    """
     try:
         vals = list(row.values)
     except Exception:
@@ -485,13 +493,13 @@ def is_header_row(row):
     for v in non_empty:
         s = str(v).strip()
 
-        # 像電話（8-11 位數字）
+        # 像電話
         digits_only = re.sub(r'\D', '', s)
         if digits_only and 8 <= len(digits_only) <= 11 and len(s) <= 20:
             return False
 
-        # 像日期
-        if re.match(r'^\d{2,4}[\-/年]\d{1,2}[\-/月]\d{1,2}', s):
+        # 像日期（含點分隔）
+        if re.match(r'^\d{2,4}[\-/\.年]\d{1,2}[\-/\.月]\d{1,2}', s):
             return False
 
         # 像純數字
