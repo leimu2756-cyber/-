@@ -75,29 +75,41 @@ def suggest_join_key(files, common_cols):
 
 
 def merge_files(files, options=None):
-    """合併多個檔案"""
+    """
+    合併多個檔案
+    options:
+      - mode: 'stack'（垂直）或 'join'（水平）
+      - duplicate_mode: 'mark'（僅標記）或 'drop'（自動去重）
+      - join_type: 'inner' | 'left' | 'right' | 'outer'
+      - join_key: 用哪個欄位當 key
+      - base_file: 基礎檔案名稱
+      - keep_source: 是否保留來源檔案欄位
+    """
     options = options or {}
     mode = options.get('mode', 'stack')
+    duplicate_mode = options.get('duplicate_mode', 'mark')
     keep_source = options.get('keep_source', True)
-    duplicate_mode = options.get('duplicate_mode', 'mark')  
 
     if not files:
         return {'error': '沒有檔案'}
 
+    # ==========================================================
     # 第一步：清理每個檔案
+    # ==========================================================
     cleaned_list = []
     files_info = []
     all_anomalies = []
     all_actions = []
     total_stats = {
         'files': 0,
-        'merged_rows': 0,          # 新增：合併後列數
-        'per_file_rows': {},        # 新增：每個檔案清理後列數
+        'merged_rows': 0,
+        'per_file_rows': {},
         'removed_non_data': 0,
-        'removed_duplicates': 0,
         'removed_summary': 0,
         'dates_fixed': 0,
         'currency_fixed': 0,
+        'duplicates_flagged': 0,
+        'duplicates_dropped': 0,
     }
 
     for i, item in enumerate(files):
@@ -108,15 +120,17 @@ def merge_files(files, options=None):
             clean_options = {
                 'remove_non_data_rows': True,
                 'clean_excel_errors': True,
-                'duplicate_mode': options.get('duplicate_mode', 'mark'), 
+                'duplicate_mode': duplicate_mode,
                 'summary_row_action': 'separate',
                 'clean_columns': True,
+                'standardize_columns': True,
                 'trim_strings': True,
                 'normalize_phone': True,
                 'normalize_date': True,
                 'normalize_email': True,
                 'clean_currency': True,
             }
+
             df_clean, actions, stats, summary_df, total_check = SmartCleaner.clean_dataframe(
                 df_raw, clean_options
             )
@@ -134,26 +148,38 @@ def merge_files(files, options=None):
                 'total_check': total_check,
             })
             all_actions.extend([f"[{file_name}] {a}" for a in actions])
-            for a in SmartCleaner.detect_anomalies(df_clean, source_name=file_name):
-                all_anomalies.append(a)
+            all_anomalies.extend(
+                SmartCleaner.detect_anomalies(
+                    df_clean,
+                    source_name=file_name,
+                    total_check=total_check,
+                )
+            )
+
             total_stats['files'] += 1
-            total_stats['per_file_rows'][file_name] = len(df_clean)  # 新增
-            total_stats['removed_non_data'] += stats['rows_removed_non_data']
-            total_stats['removed_duplicates'] += stats['rows_removed_duplicate']
-            total_stats['removed_summary'] += stats['rows_removed_summary']
-            total_stats['dates_fixed'] += stats['dates_fixed']
-            total_stats['currency_fixed'] += stats['currency_fixed']
+            total_stats['per_file_rows'][file_name] = len(df_clean)
+            total_stats['removed_non_data'] += stats.get('rows_removed_non_data', 0)
+            total_stats['removed_summary'] += stats.get('rows_removed_summary', 0)
+            total_stats['dates_fixed'] += stats.get('dates_fixed', 0)
+            total_stats['currency_fixed'] += stats.get('currency_fixed', 0)
+            total_stats['duplicates_flagged'] += stats.get('duplicates_flagged', 0)
+            total_stats['duplicates_dropped'] += stats.get('duplicates_dropped', 0)
+
         except Exception as e:
             all_anomalies.append({
-                '來源檔案': item.get('name', f'檔案{i+1}'),
-                '欄位': '-', '類型': '讀取失敗',
-                '數量': 1, '說明': str(e),
+                '来源档案': item.get('name', f'檔案{i+1}'),
+                '列号': '-',
+                '问题类型': '讀取失敗',
+                '说明': str(e),
+                '建议': '請確認檔案格式',
             })
 
     if not cleaned_list:
         return {'error': '所有檔案都無法處理'}
 
+    # ==========================================================
     # 第二步：合併
+    # ==========================================================
     try:
         if mode == 'join':
             merged_df = _join_dataframes(cleaned_list, options)
@@ -162,20 +188,7 @@ def merge_files(files, options=None):
     except Exception as e:
         return {'error': f'合併失敗：{e}'}
 
-    # 合併後列數
     total_stats['merged_rows'] = len(merged_df)
-
-    # 第三步：標記重複
-    if flag_dup:
-        try:
-            key_cols = [c for c in merged_df.columns if c not in ('來源檔案', '疑似重複')]
-            dup_mask = merged_df.duplicated(subset=key_cols, keep=False)
-            if '疑似重複' not in merged_df.columns:
-                merged_df['疑似重複'] = ''
-            merged_df.loc[dup_mask, '疑似重複'] = '是'
-            total_stats['duplicates_flagged'] = int(dup_mask.sum())
-        except Exception:
-            pass
 
     return {
         'merged_df': merged_df,
@@ -192,10 +205,18 @@ def _stack_dataframes(cleaned_list, keep_source):
     dfs = []
     for item in cleaned_list:
         df = item['df'].copy()
+        # 移除「疑似重複」欄位（合併後再重新計算）
+        if '疑似重複' in df.columns:
+            df = df.drop(columns=['疑似重複'])
         if keep_source:
             df.insert(0, '來源檔案', item['name'])
         dfs.append(df)
-    return pd.concat(dfs, ignore_index=True, sort=False)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    result = pd.concat(dfs, ignore_index=True, sort=False)
+    return result
 
 
 def _join_dataframes(cleaned_list, options):
@@ -211,11 +232,17 @@ def _join_dataframes(cleaned_list, options):
     if base_file and join_type in ('left', 'right'):
         ordered.sort(key=lambda x: 0 if x['name'] == base_file else 1)
 
-    result = ordered[0]['df'].copy()
-    result['_來源'] = ordered[0]['name']
+    # 基礎表
+    first = ordered[0]
+    result = first['df'].copy()
+    if '疑似重複' in result.columns:
+        result = result.drop(columns=['疑似重複'])
+    result['_來源'] = first['name']
 
     for item in ordered[1:]:
         df_next = item['df'].copy()
+        if '疑似重複' in df_next.columns:
+            df_next = df_next.drop(columns=['疑似重複'])
 
         if join_key not in result.columns:
             raise ValueError(f'基礎表沒有欄位「{join_key}」')
