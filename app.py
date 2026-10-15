@@ -114,7 +114,6 @@ if st.session_state['logged_in']:
 # 工具函式
 # ============================================================
 def _is_phone_col(col_name, series):
-    """判斷這欄是否為電話欄位"""
     try:
         import re as _re
         name = str(col_name).lower()
@@ -134,7 +133,6 @@ def _is_phone_col(col_name, series):
 
 
 def _is_id_col(col_name, series):
-    """判斷是否為 ID 欄位（訂單編號、產品編號等）"""
     try:
         name = str(col_name).lower()
         if any(kw in name for kw in ['編號', '编号', 'id', '序號', '代號']):
@@ -145,7 +143,6 @@ def _is_id_col(col_name, series):
 
 
 def _prepare_export_df(df):
-    """匯出前處理：電話 / ID 欄位轉字串，保留前導 0"""
     df_out = df.copy()
     for col in df_out.columns:
         try:
@@ -159,7 +156,6 @@ def _prepare_export_df(df):
 
 
 def df_to_matrix(df):
-    """DataFrame → (headers, rows)，用位置存取避免 index 問題"""
     if df is None:
         return [], []
     headers = [str(c) for c in df.columns]
@@ -179,7 +175,6 @@ def df_to_matrix(df):
 
 
 def format_cell(v):
-    """單一格轉字串"""
     if v is None:
         return ''
     try:
@@ -205,7 +200,6 @@ def csv_escape(s):
 
 
 def df_to_csv_bytes(df):
-    """CSV 匯出：電話 / ID 欄位保留前導 0"""
     df_prepared = _prepare_export_df(df)
     headers, rows = df_to_matrix(df_prepared)
     lines = []
@@ -217,16 +211,13 @@ def df_to_csv_bytes(df):
 
 
 def df_to_excel_multi(sheets_dict):
-    """Excel 匯出：電話 / ID 欄位強制為文字格式"""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         for name, df in sheets_dict.items():
             if df is None or len(df) == 0:
                 continue
-
             df_prepared = _prepare_export_df(df)
             headers, rows = df_to_matrix(df_prepared)
-
             new_rows = []
             for row in rows:
                 new_row = []
@@ -236,11 +227,9 @@ def df_to_excel_multi(sheets_dict):
                     else:
                         new_row.append(v)
                 new_rows.append(new_row)
-
             df_out = pd.DataFrame(new_rows, columns=headers)
             sheet_name = str(name)[:31]
             df_out.to_excel(writer, index=False, sheet_name=sheet_name)
-
             try:
                 ws = writer.sheets[sheet_name]
                 for col_idx, col_name in enumerate(df_out.columns, 1):
@@ -252,7 +241,6 @@ def df_to_excel_multi(sheets_dict):
                             cell.number_format = '@'
             except Exception:
                 pass
-
     return buffer.getvalue()
 
 
@@ -274,15 +262,10 @@ def df_to_json_bytes(df):
 
 
 # ============================================================
-# 清理前後對比（高亮修改處）
+# 清理前後對比
 # ============================================================
 def render_diff_view(df_before, df_after, max_rows=10):
-    """
-    清理前後對比（逐格高亮修改處）
-    綠色 = 修改後的值，灰色刪除線 = 原始值
-    """
     st.markdown("#### 🔍 逐格對比")
-
     try:
         before = df_before.head(max_rows).reset_index(drop=True)
         after = df_after.head(max_rows).reset_index(drop=True)
@@ -297,8 +280,6 @@ def render_diff_view(df_before, df_after, max_rows=10):
         '<div style="overflow-x:auto;font-size:12px;">',
         '<table style="width:100%;border-collapse:collapse;">',
     ]
-
-    # 表頭
     html_parts.append('<tr>')
     for c in cols_compare:
         html_parts.append(
@@ -307,7 +288,6 @@ def render_diff_view(df_before, df_after, max_rows=10):
         )
     html_parts.append('</tr>')
 
-    # 逐行
     n = min(len(before), len(after))
     total_changes = 0
     for i in range(n):
@@ -343,16 +323,13 @@ def render_diff_view(df_before, df_after, max_rows=10):
                 )
         html_parts.append('</tr>')
 
-    html_parts.append('</table>')
-    html_parts.append('</div>')
-
+    html_parts.append('</table></div>')
     st.markdown(''.join(html_parts), unsafe_allow_html=True)
-
     st.caption(f"📊 前 {n} 行共 {total_changes} 處修改（綠色 = 修改後、灰色刪除線 = 修改前）")
 
 
 # ============================================================
-# 聯絡區塊
+# 聯絡區塊 / 錯誤處理 / 上傳檢查
 # ============================================================
 def show_contact_box(compact=False):
     if compact:
@@ -389,8 +366,7 @@ def show_friendly_error(error, context=""):
         "⚠️ **這個檔案的格式比較特殊，系統暫時無法自動解析。**\n\n"
         "請檢查：\n"
         "- 檔案是否有加密（密碼保護）\n"
-        "- 是否為正確的 Excel / CSV 格式\n"
-        "- 試著用「⚙️ 讀取設定」手動指定標題位置"
+        "- 是否為正確的 Excel / CSV 格式"
     )
     with st.expander("🔍 技術細節（給工程師看）", expanded=False):
         if context:
@@ -714,8 +690,6 @@ elif st.session_state['user_role'] == 'client':
                 if load_err:
                     st.warning(f"⚠️ {load_err}")
 
-                st.caption(f"📊 讀取結果：{len(df_raw)} 列 × {len(df_raw.columns)} 欄")
-
                 # 自動判斷標題
                 try:
                     df = build_dataframe(df_raw, 0, 0, auto_mode=True)
@@ -728,47 +702,36 @@ elif st.session_state['user_role'] == 'client':
                     show_contact_box(compact=True)
                     st.stop()
 
-                # 只在「自動判斷失敗」時才顯示手動設定
+                # 只在自動判斷失敗時才顯示手動設定
                 auto_header_cols = all(
                     str(c).startswith('欄位') for c in df.columns
                 ) if len(df.columns) > 0 else True
 
                 if auto_header_cols:
                     st.warning("⚠️ 系統無法自動判斷表頭，請手動指定標題位置。")
-                    col_s1, col_s2, col_s3 = st.columns([1, 1, 1])
+                    col_s1, col_s2 = st.columns([1, 1])
                     with col_s1:
                         skip_n = st.number_input("跳過前幾行", min_value=0, max_value=100, value=0, key="single_skip")
                     with col_s2:
-                        header_n = st.number_input("第幾行是標題", min_value=-1, max_value=100, value=0, key="single_header")
-                    with col_s3:
-                        st.write("")
-                        st.write("")
-                        if st.button("🔄 重新解析", key="single_reparse"):
-                            try:
-                                df = build_dataframe(df_raw, skip_n, header_n, auto_mode=False)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"重新解析失敗：{e}")
+                        header_n = st.number_input("第幾行是標題（-1=無標題）", min_value=-1, max_value=100, value=0, key="single_header")
+                    if st.button("🔄 重新解析", key="single_reparse"):
+                        try:
+                            df = build_dataframe(df_raw, skip_n, header_n, auto_mode=False)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"重新解析失敗：{e}")
 
-                st.caption(f"📊 清理前：{len(df)} 列 × {len(df.columns)} 欄")
+                st.caption(f"📊 {len(df)} 列 × {len(df.columns)} 欄")
 
+                # 行業模板（信心度 ≥ 70% 才顯示）
                 try:
                     template_info = detect_template(df)
-                    if template_info['template']:
-                        st.info(f"🎯 偵測到行業模板：**{template_info['template']}**（信心度 {int(template_info['confidence']*100)}%）")
+                    if template_info['template'] and template_info.get('confidence', 0) >= 0.7:
+                        st.success(f"🎯 偵測到行業模板：**{template_info['template']}**")
                 except Exception:
                     template_info = {'template': None, 'confidence': 0}
 
-                try:
-                    col_suggest = suggest_column_mapping(df)
-                    if col_suggest:
-                        with st.expander("💡 系統建議的欄位對應", expanded=False):
-                            for k, v in col_suggest.items():
-                                st.write(f"- **{k}** → `{v}`")
-                except Exception:
-                    pass
-
-                # 重複資料處理方式（主要選項，不折疊）
+                # 重複資料處理方式（主選項）
                 dup_mode_label = st.radio(
                     "🔁 重複資料處理方式",
                     ["僅標記重複（不刪除）", "自動去重合併"],
@@ -778,7 +741,7 @@ elif st.session_state['user_role'] == 'client':
                 )
                 dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
 
-                # 進階設定（折疊，通常不用動）
+                # 進階設定（收折）
                 with st.expander("⚙️ 進階設定", expanded=False):
                     summary_action_map = {
                         "保留在資料中": "keep",
@@ -791,6 +754,13 @@ elif st.session_state['user_role'] == 'client':
                         index=2,
                         key="single_summary",
                     )
+
+                    col_suggest = suggest_column_mapping(df)
+                    if col_suggest:
+                        st.markdown("**💡 系統建議的欄位對應**")
+                        for k, v in col_suggest.items():
+                            st.caption(f"- **{k}** → `{v}`")
+
                     st.markdown("**清理項目（預設全開）**")
                     col_1, col_2 = st.columns(2)
                     with col_1:
@@ -800,7 +770,7 @@ elif st.session_state['user_role'] == 'client':
                         opt_phone = st.checkbox("標準化電話格式", value=True, key="single_phone")
                         opt_email = st.checkbox("Email 轉小寫", value=True, key="single_email")
 
-                if st.button("🚀 開始清理", type="primary", key="single_clean_btn"):
+                if st.button("🚀 開始清理", type="primary", key="single_clean_btn", use_container_width=True):
                     progress = st.progress(0)
                     status = st.empty()
                     status.text("步驟 1/3：清理資料中…")
@@ -839,6 +809,7 @@ elif st.session_state['user_role'] == 'client':
                     progress.progress(100)
                     status.empty()
 
+                    # 總計警示
                     if total_check:
                         for item in total_check:
                             col_name = item.get('column', '')
@@ -853,18 +824,17 @@ elif st.session_state['user_role'] == 'client':
                             if pct > 5:
                                 st.error(
                                     f"🚨 **總計不一致（{col_name}）** ｜ "
-                                    f"原始總計：`{original:,}` ｜ "
-                                    f"重算總計：`{recalc:,}` ｜ "
+                                    f"原始：`{original:,}` ｜ 重算：`{recalc:,}` ｜ "
                                     f"差異：`{diff_str}`（{pct:.2f}%）"
                                 )
                             else:
                                 st.warning(
                                     f"⚠️ **總計有些微差異（{col_name}）** ｜ "
-                                    f"原始總計：`{original:,}` ｜ "
-                                    f"重算總計：`{recalc:,}` ｜ "
+                                    f"原始：`{original:,}` ｜ 重算：`{recalc:,}` ｜ "
                                     f"差異：`{diff_str}`"
                                 )
 
+                    # 準備下載
                     try:
                         download_df = df_clean.copy()
                         summary_rows = build_summary_rows(df_clean, total_check)
@@ -876,10 +846,8 @@ elif st.session_state['user_role'] == 'client':
                         show_friendly_error(e, context="產生彙總列")
                         st.stop()
 
-                    st.markdown("---")
-                    st.markdown("## ✅ 清理完成！")
-                    st.caption("💡 下載檔案已包含明細資料 + 下方彙總列")
-
+                    # 下載區
+                    st.markdown("### ✅ 清理完成")
                     col_a, col_b, col_c = st.columns(3)
                     base = os.path.splitext(uploaded_file.name)[0]
 
@@ -936,16 +904,24 @@ elif st.session_state['user_role'] == 'client':
                     except Exception as e:
                         st.error(f"JSON 匯出失敗：{e}")
 
-                    st.markdown("---")
+                    # 摘要
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("原始資料", f"{len(df)} 列")
+                    c1.metric("原始", f"{len(df)} 列")
                     removed = len(df) - len(df_clean)
-                    c2.metric("清理後明細", f"{len(df_clean)} 列",
+                    c2.metric("清理後", f"{len(df_clean)} 列",
                               delta=f"-{removed}" if removed > 0 else "0")
                     c3.metric("品質分數", f"{quality_after} / 100",
                               delta=f"+{round(quality_after - quality_before, 1)}" if quality_after > quality_before else "0")
 
-                    with st.expander("📊 清理報告", expanded=True):
+                    # 前後對比（主推）
+                    with st.expander("🔍 清理前後對比（前 10 筆）", expanded=True):
+                        render_diff_view(df, df_clean, max_rows=10)
+                        if summary_rows is not None and len(summary_rows) > 0:
+                            st.markdown("**下載檔案底部彙總**")
+                            st.dataframe(summary_rows, use_container_width=True)
+
+                    # 詳細報告（收折）
+                    with st.expander("📊 詳細報告", expanded=False):
                         rep = build_clean_report(stats, total_check, template_info)
                         if len(rep) > 0:
                             st.dataframe(rep, use_container_width=True, hide_index=True)
@@ -967,28 +943,20 @@ elif st.session_state['user_role'] == 'client':
 
                         dup_records = stats.get('duplicates_records', [])
                         if dup_records:
-                            st.warning(f"⚠️ 發現 {len(dup_records)} 筆疑似重複（僅標記，未刪除）")
+                            st.warning(f"⚠️ 發現 {len(dup_records)} 筆疑似重複")
                             dup_df = build_duplicate_table(dup_records)
                             if len(dup_df) > 0:
                                 st.dataframe(dup_df, use_container_width=True, hide_index=True)
 
-                    # ================================================
-                    # 清理前後對比（高亮修改處）
-                    # ================================================
-                    with st.expander("🔍 清理前後對比（前 10 筆）", expanded=False):
-                        render_diff_view(df, df_clean, max_rows=10)
-                        if summary_rows is not None and len(summary_rows) > 0:
-                            st.markdown("**下載檔案底部彙總**")
-                            st.dataframe(summary_rows, use_container_width=True)
-
-                    with st.expander("🤖 欄位識別報告", expanded=False):
+                        st.markdown("**🤖 欄位識別報告**")
                         st.dataframe(report_df.drop(columns=['_raw_type'], errors='ignore'),
                                     use_container_width=True)
 
-                    if anomalies:
-                        with st.expander("⚠️ 異常清單", expanded=True):
+                        if anomalies:
+                            st.markdown("**⚠️ 異常清單**")
                             st.dataframe(pd.DataFrame(anomalies), use_container_width=True)
 
+                    # 寫入歷史
                     try:
                         st.session_state['history'].insert(0, {
                             'file': uploaded_file.name,
@@ -1011,7 +979,6 @@ elif st.session_state['user_role'] == 'client':
                         pass
 
                     st.caption("🔒 所有資料僅在記憶體中處理，不會寫入伺服器硬碟。")
-                    show_contact_box(compact=True)
 
         # ====================================================
         # Tab 2：多檔合併
@@ -1072,80 +1039,78 @@ elif st.session_state['user_role'] == 'client':
                         for name, cols in strategy_info['all_cols'].items():
                             st.write(f"**{name}**：{', '.join(cols)}")
 
-                    if strategy_info['strategy'] == 'stack':
-                        st.success(f"✅ **建議：垂直堆疊**（{strategy_info['reason']}）")
-                        default_mode = 'stack'
-                    elif strategy_info['strategy'] == 'ask':
-                        st.info(f"❓ **偵測到可 JOIN**（{strategy_info['reason']}）")
+                    # 策略建議
+                    if strategy_info['strategy'] == 'ask':
+                        st.info("💡 偵測到共同欄位，可選「垂直堆疊」或「水平關聯」")
                         default_mode = 'join'
                     else:
                         default_mode = 'stack'
 
-                    with st.expander("⚙️ 合併選項", expanded=True):
-                        mode_options = ["垂直堆疊（上下接起來）", "水平關聯（用共同欄位接起來）"]
-                        default_idx = 1 if default_mode == 'join' else 0
-                        merge_mode = st.radio(
-                            "合併方式", mode_options, index=default_idx,
-                            key="merge_mode_radio",
-                        )
+                    # 合併方式（橫向）
+                    merge_mode = st.radio(
+                        "🔗 合併方式",
+                        ["垂直堆疊（上下接起來）", "水平關聯（用共同欄位接起來）"],
+                        index=1 if default_mode == 'join' else 0,
+                        key="merge_mode_radio",
+                        horizontal=True,
+                    )
 
-                        use_join = "水平關聯" in merge_mode
+                    use_join = "水平關聯" in merge_mode
 
-                        if use_join:
-                            if not strategy_info['common_cols']:
-                                st.warning("⚠️ 沒有偵測到共同欄位，無法 JOIN。將改用垂直堆疊。")
-                                use_join = False
-                            else:
+                    if use_join:
+                        if not strategy_info['common_cols']:
+                            st.warning("⚠️ 沒有偵測到共同欄位，將改用垂直堆疊。")
+                            use_join = False
+                        else:
+                            col_j1, col_j2, col_j3 = st.columns(3)
+                            with col_j1:
                                 suggested_key = suggest_join_key(files_data, strategy_info['common_cols'])
                                 join_key = st.selectbox(
-                                    "JOIN 用的共同欄位",
+                                    "共同欄位",
                                     strategy_info['common_cols'],
                                     index=strategy_info['common_cols'].index(suggested_key) if suggested_key in strategy_info['common_cols'] else 0,
                                     key="merge_join_key",
                                 )
-
-                                join_type_label = st.radio(
+                            with col_j2:
+                                join_type_map = {
+                                    "LEFT JOIN": "left",
+                                    "INNER JOIN": "inner",
+                                    "RIGHT JOIN": "right",
+                                    "FULL OUTER JOIN": "outer",
+                                }
+                                join_type_label = st.selectbox(
                                     "JOIN 類型",
-                                    ["LEFT JOIN（保留左邊全部）",
-                                     "INNER JOIN（只保留兩邊都有的）",
-                                     "RIGHT JOIN（保留右邊全部）",
-                                     "FULL OUTER JOIN（兩邊都保留）"],
+                                    list(join_type_map.keys()),
                                     index=0, key="merge_join_type",
                                 )
-                                join_type_map = {
-                                    "LEFT JOIN（保留左邊全部）": "left",
-                                    "INNER JOIN（只保留兩邊都有的）": "inner",
-                                    "RIGHT JOIN（保留右邊全部）": "right",
-                                    "FULL OUTER JOIN（兩邊都保留）": "outer",
-                                }
                                 join_type = join_type_map[join_type_label]
-
+                            with col_j3:
                                 base_file = st.selectbox(
-                                    "以哪個檔案為基準（LEFT/RIGHT JOIN 用）",
+                                    "以哪個為基準",
                                     [f['name'] for f in files_data],
                                     index=0, key="merge_base_file",
                                 )
-                                st.caption(f"💡 將用「{join_key}」欄位，以「{base_file}」為基準做 {join_type.upper()} JOIN")
+                            st.caption(f"💡 用「{join_key}」欄位，以「{base_file}」為基準做 {join_type.upper()} JOIN")
 
-                        st.markdown("**🔁 重複資料處理方式**")
+                    # 重複處理 + 進階設定
+                    col_dup, col_adv = st.columns([2, 1])
+                    with col_dup:
                         dup_mode_label = st.radio(
-                            "選擇重複資料的處理方式",
-                            ["僅標記重複（不刪除）｜適合訂單、記帳本",
-                             "自動去重合併｜適合客戶名單、通訊錄"],
+                            "🔁 重複資料處理",
+                            ["僅標記重複（不刪除）", "自動去重合併"],
                             index=0, key="merge_dup_mode",
-                            label_visibility="collapsed",
+                            horizontal=True,
                         )
                         dup_mode = 'mark' if '僅標記' in dup_mode_label else 'drop'
-
-                        col1, col2 = st.columns(2)
-                        with col2:
+                    with col_adv:
+                        with st.expander("⚙️ 進階設定", expanded=False):
                             if use_join:
                                 opt_keep_source = True
-                                st.caption("✅ JOIN 模式自動保留來源資訊")
+                                st.caption("✅ JOIN 自動保留來源")
                             else:
-                                opt_keep_source = st.checkbox("保留「來源檔案」欄位", value=True, key="merge_keep")
+                                opt_keep_source = st.checkbox("保留來源檔案欄位", value=True, key="merge_keep")
 
-                    if st.button("🚀 開始合併", type="primary", key="merge_btn"):
+                    if st.button("🚀 開始合併", type="primary", key="merge_btn", use_container_width=True):
                         progress = st.progress(0)
                         status = st.empty()
                         status.text("步驟 1/2：清理各檔案中…")
@@ -1180,7 +1145,6 @@ elif st.session_state['user_role'] == 'client':
 
                             st.success(f"✅ 合併完成！共 {stats['files']} 個檔案，{len(merged)} 列")
 
-                            st.markdown("---")
                             col_a, col_b = st.columns(2)
 
                             try:
@@ -1228,7 +1192,6 @@ elif st.session_state['user_role'] == 'client':
                             except Exception as e:
                                 st.error(f"Excel 匯出失敗：{e}")
 
-                            st.markdown("---")
                             c1, c2, c3, c4 = st.columns(4)
                             c1.metric("來源檔案", stats['files'])
                             c2.metric("合併後列數", stats.get('merged_rows', len(merged)))
@@ -1271,14 +1234,14 @@ elif st.session_state['user_role'] == 'client':
                             show_contact_box(compact=True)
 
         # ====================================================
-        # Tab 3：資料分析
+        # Tab 3：資料分析（簡化）
         # ====================================================
         with tab3:
             st.subheader("📊 資料分析")
             st.caption("上傳已清理的資料，自動產生視覺化圖表。")
 
             analytics_file = st.file_uploader(
-                "上傳資料檔案",
+                "上傳資料檔案（.xlsx / .xls / .csv）",
                 type=["xlsx", "xls", "csv"],
                 key="analytics_upload",
             )
@@ -1317,7 +1280,7 @@ elif st.session_state['user_role'] == 'client':
                     except Exception:
                         pass
 
-                    st.caption(f"📊 讀取結果：{len(df_a)} 列 × {len(df_a.columns)} 欄")
+                    st.caption(f"📊 {len(df_a)} 列 × {len(df_a.columns)} 欄")
                     try:
                         render_analytics(df_a)
                     except Exception as e:
