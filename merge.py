@@ -1,11 +1,11 @@
 """多檔合併模組（支援垂直堆疊 + 水平 JOIN）"""
 import pandas as pd
 from cleaner import SmartCleaner
-from utils import is_summary_row
+from utils import is_summary_row, standardize_columns
 
 
 def detect_merge_strategy(files):
-    """偵測多個檔案該用哪種合併策略"""
+    """偵測多個檔案該用哪種合併策略（先做欄位標準化）"""
     if not files or len(files) < 2:
         return {'strategy': 'stack', 'common_cols': [], 'all_cols': {}, 'reason': '只有一個檔案'}
 
@@ -13,7 +13,12 @@ def detect_merge_strategy(files):
     for item in files:
         name = item['name']
         df = item['df']
-        cols = [str(c).strip() for c in df.columns if str(c).strip() != '來源檔案']
+        # ★ 關鍵：先做欄位標準化，再計算共同欄位
+        try:
+            df_std = standardize_columns(df.copy(), enabled=True)
+        except Exception:
+            df_std = df
+        cols = [str(c).strip() for c in df_std.columns if str(c).strip() != '來源檔案']
         all_cols[name] = cols
 
     col_sets = [set(cols) for cols in all_cols.values()]
@@ -58,26 +63,23 @@ def suggest_join_key(files, common_cols):
     if not common_cols:
         return None
 
-    # 不適合當 JOIN key 的欄位關鍵字
     EXCLUDE_KEYWORDS = [
         '單價', '单价', '金額', '金额', '數量', '数量', '價錢', '价钱',
         '價格', '价格', '總計', '总计', '日期', '時間', '时间',
         '備註', '备注', '說明', '说明',
     ]
 
-    # 優先當 JOIN key 的關鍵字
     PRIORITY_KEYWORDS = [
-        '編號', '编号', 'id', 'ID', '序號', '序號', '代號', '代號',
+        '編號', '编号', 'id', '序號', '代號',
     ]
     SECONDARY_KEYWORDS = [
-        '電話', '手机', '手機', 'email', '帳號', '账号',
+        '電話', '手機', 'email', '帳號',
     ]
 
     scores = {}
     for col in common_cols:
         col_lower = str(col).lower()
 
-        # 排除不適合的欄位
         if any(kw in col_lower for kw in EXCLUDE_KEYWORDS):
             continue
 
@@ -94,11 +96,8 @@ def suggest_join_key(files, common_cols):
                 continue
 
             avg_ratio = sum(ratios) / len(ratios)
-
-            # 加權分數
             score = avg_ratio
 
-            # 優先關鍵字加分
             if any(kw in col_lower for kw in PRIORITY_KEYWORDS):
                 score += 10.0
             elif any(kw in col_lower for kw in SECONDARY_KEYWORDS):
@@ -109,23 +108,12 @@ def suggest_join_key(files, common_cols):
             continue
 
     if not scores:
-        # 如果全被排除，回傳原始第一個
         return common_cols[0] if common_cols else None
 
     return max(scores.items(), key=lambda x: x[1])[0]
 
 
 def merge_files(files, options=None):
-    """
-    合併多個檔案
-    options:
-      - mode: 'stack'（垂直）或 'join'（水平）
-      - duplicate_mode: 'mark'（僅標記）或 'drop'（自動去重）
-      - join_type: 'inner' | 'left' | 'right' | 'outer'
-      - join_key: 用哪個欄位當 key
-      - base_file: 基礎檔案名稱
-      - keep_source: 是否保留來源檔案欄位
-    """
     options = options or {}
     mode = options.get('mode', 'stack')
     duplicate_mode = options.get('duplicate_mode', 'mark')
@@ -134,9 +122,7 @@ def merge_files(files, options=None):
     if not files:
         return {'error': '沒有檔案'}
 
-    # ==========================================================
     # 第一步：清理每個檔案
-    # ==========================================================
     cleaned_list = []
     files_info = []
     all_anomalies = []
@@ -218,9 +204,7 @@ def merge_files(files, options=None):
     if not cleaned_list:
         return {'error': '所有檔案都無法處理'}
 
-    # ==========================================================
     # 第二步：合併
-    # ==========================================================
     try:
         if mode == 'join':
             merged_df = _join_dataframes(cleaned_list, options)
@@ -246,7 +230,6 @@ def _stack_dataframes(cleaned_list, keep_source):
     dfs = []
     for item in cleaned_list:
         df = item['df'].copy()
-        # 移除「疑似重複」欄位（合併後再重新計算）
         if '疑似重複' in df.columns:
             df = df.drop(columns=['疑似重複'])
         if keep_source:
@@ -273,7 +256,6 @@ def _join_dataframes(cleaned_list, options):
     if base_file and join_type in ('left', 'right'):
         ordered.sort(key=lambda x: 0 if x['name'] == base_file else 1)
 
-    # 基礎表
     first = ordered[0]
     result = first['df'].copy()
     if '疑似重複' in result.columns:
