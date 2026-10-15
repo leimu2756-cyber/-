@@ -47,12 +47,40 @@ def detect_merge_strategy(files):
 
 
 def suggest_join_key(files, common_cols):
-    """從共同欄位中，建議最適合當 JOIN key 的欄位"""
+    """
+    從共同欄位中，建議最適合當 JOIN key 的欄位
+    優先順序：
+      1. 欄位名稱含「編號 / ID / 代號 / 序號」→ 優先
+      2. 欄位名稱含「電話 / Email / 帳號」→ 次優先
+      3. 唯一值比例越高越適合
+      4. 排除「單價、金額、數量、日期」等不適合當 key 的欄位
+    """
     if not common_cols:
         return None
 
+    # 不適合當 JOIN key 的欄位關鍵字
+    EXCLUDE_KEYWORDS = [
+        '單價', '单价', '金額', '金额', '數量', '数量', '價錢', '价钱',
+        '價格', '价格', '總計', '总计', '日期', '時間', '时间',
+        '備註', '备注', '說明', '说明',
+    ]
+
+    # 優先當 JOIN key 的關鍵字
+    PRIORITY_KEYWORDS = [
+        '編號', '编号', 'id', 'ID', '序號', '序號', '代號', '代號',
+    ]
+    SECONDARY_KEYWORDS = [
+        '電話', '手机', '手機', 'email', '帳號', '账号',
+    ]
+
     scores = {}
     for col in common_cols:
+        col_lower = str(col).lower()
+
+        # 排除不適合的欄位
+        if any(kw in col_lower for kw in EXCLUDE_KEYWORDS):
+            continue
+
         try:
             ratios = []
             for item in files:
@@ -64,11 +92,24 @@ def suggest_join_key(files, common_cols):
                 ratios.append(u / max(n, 1))
             if not ratios:
                 continue
-            scores[col] = sum(ratios) / len(ratios)
+
+            avg_ratio = sum(ratios) / len(ratios)
+
+            # 加權分數
+            score = avg_ratio
+
+            # 優先關鍵字加分
+            if any(kw in col_lower for kw in PRIORITY_KEYWORDS):
+                score += 10.0
+            elif any(kw in col_lower for kw in SECONDARY_KEYWORDS):
+                score += 5.0
+
+            scores[col] = score
         except Exception:
             continue
 
     if not scores:
+        # 如果全被排除，回傳原始第一個
         return common_cols[0] if common_cols else None
 
     return max(scores.items(), key=lambda x: x[1])[0]
