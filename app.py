@@ -65,6 +65,15 @@ st.markdown("""
     footer { visibility: hidden !important; }
     #MainMenu { visibility: hidden !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
+        /* 強制顯示左上角的展開側邊欄按鈕 */
+    [data-testid="collapsedControl"] { 
+        display: block !important; 
+        visibility: visible !important;
+        position: fixed !important;
+        top: 10px !important;
+        left: 10px !important;
+        z-index: 99999 !important;
+    }
 
     .contact-box {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
