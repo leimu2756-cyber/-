@@ -96,6 +96,26 @@ st.markdown("""
         margin-top: 12px;
     }
     .contact-box a:hover { transform: scale(1.05); }
+    /* 強制顯示側邊欄本體 */
+    [data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        transform: translateX(0) !important;
+        min-width: 300px !important;
+        z-index: 99999 !important;
+    }
+
+    /* 強制顯示左上角的展開按鈕 */
+    [data-testid="collapsedControl"] {
+        display: block !important;
+        visibility: visible !important;
+        position: fixed !important;
+        top: 15px !important;
+        left: 15px !important;
+        z-index: 999999 !important;
+        background: white !important;
+        border-radius: 5px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
