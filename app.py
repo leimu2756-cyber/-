@@ -60,21 +60,20 @@ except Exception:
 
 st.markdown("""
 <style>
+    /* 隱藏右上角工具列與 Deploy 按鈕 */
     [data-testid="stToolbar"] { display: none !important; }
-    header[data-testid="stHeader"] { display: none !important; }
+    [data-testid="stAppDeployButton"] { display: none !important; }
+    
+    /* 隱藏頁尾與漢堡選單 */
     footer { visibility: hidden !important; }
     #MainMenu { visibility: hidden !important; }
-    [data-testid="stAppDeployButton"] { display: none !important; }
-        /* 強制顯示左上角的展開側邊欄按鈕 */
-    [data-testid="collapsedControl"] { 
-        display: block !important; 
-        visibility: visible !important;
-        position: fixed !important;
-        top: 10px !important;
-        left: 10px !important;
-        z-index: 99999 !important;
+    
+    /* 讓 header 背景透明，但保留它的點擊區域（這樣側邊欄按鈕才能運作） */
+    header[data-testid="stHeader"] { 
+        background: transparent !important; 
     }
 
+    /* 聯絡區塊樣式 */
     .contact-box {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 24px;
