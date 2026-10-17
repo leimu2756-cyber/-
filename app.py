@@ -4,6 +4,7 @@ import time
 import json
 import bcrypt
 import pandas as pd
+import numpy as np
 import streamlit as st
 
 from cleaner import SmartCleaner
