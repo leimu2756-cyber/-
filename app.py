@@ -6,6 +6,8 @@ import bcrypt
 import pandas as pd
 import numpy as np
 import streamlit as st
+import requests
+
 
 from cleaner import SmartCleaner
 from loader import load_any_file, format_bytes, SINGLE_FILE_LIMIT, TOTAL_UPLOAD_LIMIT
