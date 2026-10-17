@@ -50,6 +50,7 @@ st.set_page_config(
     page_title="AI 資料清理工作台",
     page_icon="🧹",
     layout="wide",
+    initial_sidebar_state="expanded",  # 👈 加上這行，強制預設展開
 )
 
 try:
