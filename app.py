@@ -3,11 +3,10 @@ import io
 import time
 import json
 import bcrypt
+import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
-import requests
-
 
 from cleaner import SmartCleaner
 from loader import load_any_file, format_bytes, SINGLE_FILE_LIMIT, TOTAL_UPLOAD_LIMIT
@@ -116,6 +115,17 @@ if st.session_state['logged_in']:
 # ============================================================
 # 工具函式
 # ============================================================
+def send_admin_notification(message):
+    """發送即時通知給管理員"""
+    try:
+        discord_url = st.secrets.get("NOTIFY_DISCORD_URL")
+        if discord_url:
+            payload = {"content": message}
+            requests.post(discord_url, json=payload, timeout=5)
+    except Exception:
+        pass
+
+
 def _is_phone_col(col_name, series):
     try:
         import re as _re
@@ -189,10 +199,8 @@ def format_cell(v):
     if isinstance(v, bool):
         return str(v)
     
-    # 強化數字判斷（包含 Python 原生與 numpy 型態）
     if isinstance(v, (int, float, np.integer, np.floating)):
         try:
-            # 如果轉成 float 後是小數點後全為 0，就轉成 int
             if float(v).is_integer():
                 return str(int(float(v)))
             return str(v)
@@ -218,9 +226,7 @@ def df_to_csv_bytes(df):
     for row in rows:
         cells = []
         for v in row:
-            # 先讓 format_cell 處理成字串
             s = format_cell(v)
-            # 二次防禦：如果字串結尾是 .0，且前面是數字，就把 .0 砍掉
             if s.endswith('.0') and s[:-2].replace('-', '').isdigit():
                 s = s[:-2]
             cells.append(csv_escape(s))
@@ -230,6 +236,7 @@ def df_to_csv_bytes(df):
 
 
 def df_to_excel_multi(sheets_dict):
+    """Excel 匯出：電話 / ID 欄位強制為文字格式"""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         for name, df in sheets_dict.items():
@@ -280,9 +287,6 @@ def df_to_json_bytes(df):
     return json.dumps(records, ensure_ascii=False, indent=2).encode('utf-8')
 
 
-# ============================================================
-# 清理前後對比
-# ============================================================
 def render_diff_view(df_before, df_after, max_rows=10):
     st.markdown("#### 🔍 逐格對比")
     try:
@@ -347,9 +351,6 @@ def render_diff_view(df_before, df_after, max_rows=10):
     st.caption(f"📊 前 {n} 行共 {total_changes} 處修改（綠色 = 修改後、灰色刪除線 = 修改前）")
 
 
-# ============================================================
-# 聯絡區塊 / 錯誤處理 / 上傳檢查
-# ============================================================
 def show_contact_box(compact=False):
     if compact:
         st.markdown("---")
@@ -469,6 +470,10 @@ if not st.session_state['logged_in']:
                             {"u": u, "p": hashed.decode('utf-8'), "c": contact},
                         )
                         st.sidebar.success("註冊成功！直接登入即可使用全部功能。")
+                        
+                        # 發送新用戶註冊通知
+                        send_admin_notification(f"🔔 **新用戶註冊**\n帳號：{u}\n聯絡：{contact}")
+                        
                     except Exception as e:
                         st.sidebar.error(f"註冊失敗：{e}")
 
@@ -1084,7 +1089,6 @@ elif st.session_state['user_role'] == 'client':
                             col_j1, col_j2, col_j3 = st.columns(3)
                             with col_j1:
                                 suggested_key = suggest_join_key(files_data, strategy_info['common_cols'])
-                                # 動態 key，避免記憶上次選擇
                                 file_hash = hash(tuple(f['name'] for f in files_data))
                                 default_idx = (
                                     strategy_info['common_cols'].index(suggested_key)
@@ -1175,7 +1179,6 @@ elif st.session_state['user_role'] == 'client':
 
                             col_a, col_b = st.columns(2)
 
-                            # CSV 匯出（獨立處理）
                             csv_bytes = None
                             try:
                                 csv_bytes = df_to_csv_bytes(merged)
@@ -1187,6 +1190,7 @@ elif st.session_state['user_role'] == 'client':
                                     st.download_button("📄 下載 CSV", csv_bytes, "merged.csv",
                                                       "text/csv", use_container_width=True, type="primary",
                                                       key="merge_dl_csv")
+
                             excel_bytes = None
                             try:
                                 total_rows = []
@@ -1268,7 +1272,7 @@ elif st.session_state['user_role'] == 'client':
                             show_contact_box(compact=True)
 
         # ====================================================
-        # Tab 3：資料分析（簡化）
+        # Tab 3：資料分析
         # ====================================================
         with tab3:
             st.subheader("📊 資料分析")
