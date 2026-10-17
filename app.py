@@ -175,6 +175,7 @@ def df_to_matrix(df):
 
 
 def format_cell(v):
+    """單一格轉字串（確保整數絕不顯示 .0）"""
     if v is None:
         return ''
     try:
@@ -184,12 +185,17 @@ def format_cell(v):
         pass
     if isinstance(v, bool):
         return str(v)
-    if isinstance(v, float):
-        if v == int(v):
-            return str(int(v))
-        return str(v)
-    if isinstance(v, int):
-        return str(v)
+    
+    # 強化數字判斷（包含 Python 原生與 numpy 型態）
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        try:
+            # 如果轉成 float 後是小數點後全為 0，就轉成 int
+            if float(v).is_integer():
+                return str(int(float(v)))
+            return str(v)
+        except Exception:
+            return str(v)
+            
     return str(v)
 
 
@@ -200,13 +206,23 @@ def csv_escape(s):
 
 
 def df_to_csv_bytes(df):
+    """CSV 匯出：電話 / ID 欄位保留前導 0，且整數不顯示小數點"""
     df_prepared = _prepare_export_df(df)
     headers, rows = df_to_matrix(df_prepared)
     lines = []
     lines.append(','.join(csv_escape(h) for h in headers))
+    
     for row in rows:
-        cells = [csv_escape(format_cell(v)) for v in row]
+        cells = []
+        for v in row:
+            # 先讓 format_cell 處理成字串
+            s = format_cell(v)
+            # 二次防禦：如果字串結尾是 .0，且前面是數字，就把 .0 砍掉
+            if s.endswith('.0') and s[:-2].replace('-', '').isdigit():
+                s = s[:-2]
+            cells.append(csv_escape(s))
         lines.append(','.join(cells))
+        
     return ('\n'.join(lines)).encode('utf-8-sig')
 
 
